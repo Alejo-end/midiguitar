@@ -1,184 +1,138 @@
-// tof_midi.ino
-// XIAO ESP32-S3 Sense + VL53L4CD → USB MIDI CC messages
+// tof_midi.ino — Time-of-flight distance sensor → USB MIDI CC
 //
-// Libraries needed (Arduino Library Manager):
-//   - SparkFun VL53L1X Arduino Library  (search "VL53L1X", install SparkFun's)
-//   USB MIDI is built into ESP32 Arduino Core 3.x — no extra lib needed.
+// Converts hand distance over a VL53L1X/VL53L4CD sensor into MIDI Control
+// Change messages.  Built for a Squier Mustang guitar with the sensor
+// mounted near the pickups — wave your hand to modulate effects in
+// Max/MSP, Ableton, or any MIDI-capable host.
 //
-// Arduino IDE settings:
-//   Board    : XIAO_ESP32S3
-//   USB Mode : USB-OTG (TinyUSB)   ← critical, or MIDI won't enumerate
+// Hardware:  Seeed XIAO ESP32-S3  +  VL53L1X/VL53L4CD breakout (I2C)
+// Wiring:   SDA → D4 (GPIO5),  SCL → D5 (GPIO6),  3V3,  GND
+//
+// Arduino IDE:
+//   Board : XIAO_ESP32S3
+//   USB   : USB-OTG (TinyUSB)       ← required for MIDI enumeration
+//
+// Libraries (Arduino Library Manager):
+//   SparkFun VL53L1X               ← also works with VL53L4CD
+//   USB + USBMIDI                  ← built into ESP32 Arduino Core 3.x
 
-// ─── Config ──────────────────────────────────────────────────────────────────
-#define DEBUG        1     // 1 = print distance + CC to Serial, 0 = silent
+// ─── Configuration ───────────────────────────────────────────────────────────
 
-#define NUM_SENSORS  1     // Increase when adding sensors (max 4 with pins below)
+#define DEBUG         1           // 1 = serial output, 0 = silent
 
-// XSHUT pins are only needed for multi-sensor setups (NUM_SENSORS > 1).
-// Wire each sensor's XSHUT to a GPIO and add address-reassignment logic then.
+#define I2C_SDA       5           // GPIO5 (XIAO D4)
+#define I2C_SCL       6           // GPIO6 (XIAO D5)
+#define I2C_FREQ      400000      // 400 kHz fast-mode
 
-#define I2C_SDA      5     // D4 — Qwiic SDA
-#define I2C_SCL      6     // D5 — Qwiic SCL
-#define I2C_FREQ     400000
+#define MIDI_CH       1           // MIDI channel (1–16)
+#define CC_NUM        20          // CC number sent to host
 
-#define MIDI_CHANNEL 1     // 1–16
-#define CC_BASE      20    // Sensor 0 → CC20, sensor 1 → CC21, …
+#define DIST_MIN_MM   10          // hand closest  → CC 0
+#define DIST_MAX_MM   500         // hand farthest → CC 127
 
-#define DIST_MIN_MM  10    // Distance mapped to CC 0
-#define DIST_MAX_MM  500   // Distance mapped to CC 127
-
-#define POLL_RATE_MS 20    // ~50 Hz
-#define SMOOTH_ALPHA 0.2f  // EMA factor: 0 = max smooth, 1 = raw
+#define POLL_MS       20          // sensor poll interval (~50 Hz)
+#define EMA_ALPHA     0.2f        // smoothing: 0 → heavy, 1 → raw
 
 // ─── Includes ────────────────────────────────────────────────────────────────
+
 #include <Wire.h>
 #include <USB.h>
 #include <USBMIDI.h>
 #include <SparkFun_VL53L1X.h>
 
-// ─── USB MIDI instance ───────────────────────────────────────────────────────
-USBMIDI MIDIusb;
+// ─── Globals ─────────────────────────────────────────────────────────────────
 
-// ─── Sensor state ────────────────────────────────────────────────────────────
-static SFEVL53L1X       sensors[NUM_SENSORS];
-static bool             sensorValid[NUM_SENSORS];
-static int16_t          distances[NUM_SENSORS];
+static USBMIDI      midi;
+static SFEVL53L1X   sensor;
 
-// ─── Mapper state ────────────────────────────────────────────────────────────
-static float   smoothed[NUM_SENSORS];   // -1.0f = no reading yet (sentinel)
-static int16_t lastCC[NUM_SENSORS];
+static float         ema    = -1.0f;  // EMA accumulator (−1 = unseeded)
+static int16_t       prevCC = -1;     // last CC sent (−1 = none yet)
+static unsigned long tPoll  = 0;
 
-// ─── Timing ──────────────────────────────────────────────────────────────────
-static unsigned long lastPoll = 0;
+// ─── Sensor init ─────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Sensor init
-// Wakes sensors one at a time via XSHUT and assigns each a unique I2C address.
-// Sensor i gets address 0x30+i (sensor 0 = 0x30, sensor 1 = 0x31, …).
-// ─────────────────────────────────────────────────────────────────────────────
-static void scanI2C() {
-    Serial.println("I2C scan:");
-    bool found = false;
-    for (uint8_t addr = 1; addr < 127; addr++) {
-        Wire.beginTransmission(addr);
-        if (Wire.endTransmission() == 0) {
-            Serial.printf("  device at 0x%02X\n", addr);
-            found = true;
-        }
+static bool initSensor() {
+    // begin() runs the full register init sequence.  Its model-ID check
+    // rejects VL53L4CD variants — ignore the return since the register-
+    // level setup is still valid for that sensor family.
+    sensor.begin(Wire);
+
+    sensor.setTimingBudgetInMs(POLL_MS);
+    sensor.setIntermeasurementPeriod(POLL_MS);
+    sensor.startRanging();
+
+    // Block until the first measurement arrives to confirm the sensor
+    // is alive and ranging — more reliable than checking begin()'s
+    // return value, which can false-negative on VL53L4CD.
+    unsigned long t0 = millis();
+    while (!sensor.checkForDataReady()) {
+        if (millis() - t0 > 200) return false;
+        delay(5);
     }
-    if (!found) Serial.println("  no devices found — check wiring");
-}
-
-static bool initSensors() {
-    bool allOk = true;
+    sensor.clearInterrupt();
 
 #if DEBUG
-    scanI2C();
+    Serial.println("Sensor OK");
 #endif
+    return true;
+}
 
-    for (int i = 0; i < NUM_SENSORS; i++) {
-        sensorValid[i] = false;
-        distances[i]   = -1;
+// ─── Read + send ─────────────────────────────────────────────────────────────
 
-        // begin() may fail model-ID check on some sensor variants — call it
-        // for side-effect initialisation but don't bail on the return value.
-        sensors[i].begin(Wire);
+static void pollAndSend() {
+    if (!sensor.checkForDataReady()) return;
 
-        sensors[i].setTimingBudgetInMs(20);
-        sensors[i].setIntermeasurementPeriod(20);
-        sensors[i].startRanging();
-        sensorValid[i] = true;
+    int16_t dist = -1;
+    if (sensor.getRangeStatus() == 0)
+        dist = sensor.getDistance();
+    sensor.clearInterrupt();
+
+    if (dist < 0) return;
+
+    // Seed EMA on first valid reading to avoid ramp-up artifact
+    if (ema < 0.0f)
+        ema = (float)dist;
+    else
+        ema = EMA_ALPHA * dist + (1.0f - EMA_ALPHA) * ema;
+
+    // map() does not clamp, so constrain to valid CC range
+    int16_t cc = constrain(
+        map(lroundf(ema), DIST_MIN_MM, DIST_MAX_MM, 0, 127), 0, 127);
+
+    if (cc == prevCC) return;
+    prevCC = cc;
+
+    midi.controlChange(MIDI_CH - 1, CC_NUM, cc);   // channel is 0-indexed
 
 #if DEBUG
-        Serial.printf("[sensor %d] started\n", i);
+    Serial.printf("dist=%d  ema=%.1f  CC%d=%d\n", dist, ema, CC_NUM, cc);
 #endif
-    }
-
-    return allOk;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Poll sensors — non-blocking, called every POLL_RATE_MS
-// ─────────────────────────────────────────────────────────────────────────────
-static void pollSensors() {
-    for (int i = 0; i < NUM_SENSORS; i++) {
-        if (!sensorValid[i]) continue;
+// ─── Arduino entry points ────────────────────────────────────────────────────
 
-        if (!sensors[i].checkForDataReady()) continue;
-
-        // getRangeStatus() == 0 means valid; anything else is an error.
-        if (sensors[i].getRangeStatus() != 0) {
-            distances[i] = -1;
-        } else {
-            distances[i] = static_cast<int16_t>(sensors[i].getDistance());
-        }
-        sensors[i].clearInterrupt();
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Process readings → smooth → map → send MIDI CC (if changed)
-// ─────────────────────────────────────────────────────────────────────────────
-static void processSensors() {
-    for (int i = 0; i < NUM_SENSORS; i++) {
-        if (distances[i] == -1) continue;
-
-        // Seed smoother on first valid reading to avoid a ramp from the initial value.
-        if (smoothed[i] < 0.0f)
-            smoothed[i] = static_cast<float>(distances[i]);
-        else
-            smoothed[i] = SMOOTH_ALPHA * distances[i]
-                        + (1.0f - SMOOTH_ALPHA) * smoothed[i];
-
-        int16_t ccVal = static_cast<int16_t>(
-            constrain(map(static_cast<long>(smoothed[i]),
-                          DIST_MIN_MM, DIST_MAX_MM, 0, 127),
-                      0, 127));
-
-        if (ccVal == lastCC[i]) continue;
-        lastCC[i] = ccVal;
-
-        uint8_t ccNum = CC_BASE + i;
-        MIDIusb.controlChange(MIDI_CHANNEL - 1, ccNum, ccVal); // channel is 0-based
-
-#if DEBUG
-        Serial.printf("[mapper %d] dist=%d  smooth=%.1f  CC%d=%d\n",
-                      i, distances[i], smoothed[i], ccNum, ccVal);
-#endif
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// setup / loop
-// ─────────────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
     delay(500);
 
-    USB.enableDFU(); // keeps upload port available without needing BOOT+RESET
-    MIDIusb.begin();
+    USB.enableDFU();    // keeps upload port accessible without BOOT+RESET
+    midi.begin();
     USB.begin();
 
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ);
 
-    if (!initSensors()) {
-        Serial.println("ERROR: sensor init failed — check wiring");
-        while (1) delay(1000);
+    if (!initSensor()) {
+        Serial.println("ERR: sensor not responding — check wiring");
+        while (true) delay(1000);
     }
 
-    for (int i = 0; i < NUM_SENSORS; i++) {
-        smoothed[i] = -1.0f; // sentinel: seed EMA on first valid reading
-        lastCC[i]   = -1;
-    }
-
-    Serial.println("Ready.");
+#if DEBUG
+    Serial.printf("Ready — CC%d on ch %d\n", CC_NUM, MIDI_CH);
+#endif
 }
 
 void loop() {
-    unsigned long now = millis();
-    if (now - lastPoll >= POLL_RATE_MS) {
-        lastPoll = now;
-        pollSensors();
-        processSensors();
-    }
+    if (millis() - tPoll < POLL_MS) return;
+    tPoll = millis();
+    pollAndSend();
 }
