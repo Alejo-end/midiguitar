@@ -1,0 +1,21 @@
+# KiCad
+*.kicad_prl
+*-backups/
+fp-info-cache
+*.bak
+*.tmp
+*~
+_autosave-*
+*.kicad_pcb-bak
+
+# Build outputs
+*.dsn
+*.ses
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
