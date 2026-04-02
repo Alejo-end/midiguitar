@@ -6,6 +6,65 @@ A time-of-flight distance sensor embedded in a Squier Mustang electric guitar, t
 
 Wave your hand over the VL53L1X sensor mounted near the pickups. The firmware converts distance and hand speed into MIDI CC and pitch bend messages, sent over USB or Bluetooth LE. A slide switch selects the transport; a second switch toggles between CC and pitch bend mode.
 
+## System overview
+
+### Signal flow
+
+```mermaid
+graph LR
+    subgraph Digital — MIDI control
+        Hand([Hand gesture]) --> ToF[VL53L1X\nToF Sensor]
+        ToF -->|I2C| ESP[XIAO\nESP32-S3]
+        SW1[SW1\nUSB / BLE] -->|GPIO3| ESP
+        SW2[SW2\nCC / Bend] -->|GPIO4| ESP
+        ESP -->|USB MIDI| Host[Max/MSP\nAbleton\nDAW]
+        ESP -.->|BLE MIDI| Host
+        ESP -->|GPIO2| Neo[NeoPixel\n8x WS2812B]
+        Bat[LiPo\nBattery] -.->|BAT+/-| ESP
+    end
+
+    subgraph Analog — guitar audio
+        Neck[Neck\nPickup] --> SW3[SW3\non/off]
+        Bridge[Bridge\nPickup] --> SW4[SW4\non/off]
+        SW3 --> Pots[Vol / Tone]
+        SW4 --> Pots
+        Pots --> Jack[Output\nJack]
+        Jack --> Amp[Amp / Audio\nInterface]
+    end
+
+    style Hand fill:#f9f,stroke:#333
+    style Host fill:#9f9,stroke:#333
+    style Amp fill:#9f9,stroke:#333
+    style ESP fill:#69f,stroke:#333,color:#fff
+    style Neo fill:#ff0,stroke:#333
+```
+
+### Pickguard layout
+
+```mermaid
+block-beta
+    columns 5
+
+    space space space space space
+    Neck["Neck\nPickup"] space space space Bridge["Bridge\nPickup"]
+    space space space space space
+    SW3["SW3\nNeck on/off"] space ToF["ToF\nSensor"] space SW4["SW4\nBridge on/off"]
+    space space space space space
+    SW1["SW1\nUSB/BLE"] SW2["SW2\nCC/Bend"] space Neo["NeoPixel Strip\n████████"] space
+    space space space space space
+    space space Pots["Vol / Tone"] space space
+
+    style Neck fill:#f96,stroke:#333
+    style Bridge fill:#f96,stroke:#333
+    style ToF fill:#69f,stroke:#333,color:#fff
+    style Neo fill:#ff0,stroke:#333
+    style SW1 fill:#ddd,stroke:#333
+    style SW2 fill:#ddd,stroke:#333
+    style SW3 fill:#ddd,stroke:#333
+    style SW4 fill:#ddd,stroke:#333
+    style Pots fill:#ddd,stroke:#333
+```
+
 ## MIDI output
 
 | Message    | Source        | Use case                                   |
