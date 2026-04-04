@@ -177,14 +177,14 @@ static void bleSend(uint8_t status, uint8_t d1, uint8_t d2) {
 
 static void sendCC(uint8_t ch, uint8_t cc, uint8_t val) {
     if (transport == TRANSPORT_USB)
-        usbMidi.controlChange(ch, cc, val);
+        usbMidi.controlChange(cc, val, ch + 1);    // control, value, channel (1-based)
     else
         bleSend(0xB0 | (ch & 0x0F), cc, val);
 }
 
 static void sendPitchBend(uint8_t ch, uint16_t bend) {
     if (transport == TRANSPORT_USB) {
-        usbMidi.pitchBend(ch, bend);
+        usbMidi.pitchBend((uint16_t)bend, (uint8_t)(ch + 1));  // value, channel (1-based)
     } else {
         uint8_t lsb = bend & 0x7F;
         uint8_t msb = (bend >> 7) & 0x7F;

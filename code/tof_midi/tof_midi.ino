@@ -102,7 +102,7 @@ static void pollAndSend() {
     if (cc == prevCC) return;
     prevCC = cc;
 
-    midi.controlChange(MIDI_CH - 1, CC_NUM, cc);   // channel is 0-indexed
+    midi.controlChange(CC_NUM, cc, MIDI_CH);   // control, value, channel (1-based)
 
 #if DEBUG
     Serial.printf("dist=%d  ema=%.1f  CC%d=%d\n", dist, ema, CC_NUM, cc);
