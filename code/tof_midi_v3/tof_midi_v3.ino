@@ -1,111 +1,92 @@
 // tof_midi_v3.ino — Dual ToF MIDI controller for electric guitar
 //
-// Two time-of-flight sensors give independent MIDI control axes:
-//   VL53L1X  (main cavity)  — long-range hand gestures (10–500mm)
-//   VL6180X  (small cavity) — close-range finger gestures (5–100mm)
+// VL53L1X  (main cavity)  — long-range hand gestures (10–500mm)
+// VL6180X  (small cavity) — close-range finger gestures (5–100mm)
 //
 // MIDI output:
-//   CC20        — VL53L1X distance    (wah, filter, delay)
-//   CC21        — VL53L1X velocity    (resonance, attack)
-//   CC22        — VL6180X distance    (fine modulation, vibrato)
-//   Pitch Bend  — VL53L1X distance    (14-bit, mode B)
+//   CC20        — VL53L1X distance
+//   CC21        — VL53L1X velocity
+//   CC22        — VL6180X distance
+//   Pitch Bend  — VL53L1X distance (14-bit, mode B)
 //
 // Hardware:
 //   Seeed XIAO ESP32-S3
-//   VL53L1X ToF sensor                (I2C, reassigned to 0x30)
-//   VL6180X ToF sensor                (I2C, stays at 0x29)
+//   VL53L1X + VL6180X ToF sensors     (I2C)
 //   16-LED WS2812B NeoPixel ring
-//   2x SPDT slide switches
-//   LiPo battery (optional)
+//   SSD1306 128x64 OLED               (I2C)
+//   Rotary encoder with push           (EC11-style)
+//   SPDT slide switch, tactile button
 //
-// Wiring:
 //                         XIAO ESP32-S3
 //                        ┌─────────────┐
 //                   5V ──┤ 5V      GND ├── GND bus
 //                  GND ──┤ GND     3V3 ├── 3V3 bus
-//          I2C SDA    ──┤ D4      D10 ├──
-//          I2C SCL    ──┤ D5       D9 ├──
-//   VL53L1X XSHUT ──────┤ D6       D8 ├──
-//                        ┤ D7       D7 ├──
-//     NeoPixel DIN ──────┤ D1       D6 ├──
+//          I2C SDA    ──┤ D4      D10 ├── Encoder push
+//          I2C SCL    ──┤ D5       D9 ├── Encoder B
+//   VL53L1X XSHUT ──────┤ D6       D8 ├── Encoder A
+//   VL6180X XSHUT ──────┤ D7            │
+//     NeoPixel DIN ──────┤ D1            │
 //     Transport SW ──────┤ D2            │
-//     Mode SW ───────────┤ D3            │
+//     Bypass BTN ────────┤ D3            │
 //                        └─────────────┘
 //
-//   VL53L1X (5 wires — main cavity, long range):
-//     VCC → 3V3    GND → GND    SDA → D4    SCL → D5    XSHUT → D6
+// Board: XIAO_ESP32S3,  USB: USB-OTG (TinyUSB)
 //
-//   VL6180X (4 wires — small cavity, close range):
-//     VCC → 3V3    GND → GND    SDA → D4    SCL → D5
-//
-//   NeoPixel ring (3 wires):
-//     VCC → 3V3    GND → GND    DIN → D1
-//
-//   Transport switch (SW1):
-//     Common → D2    Throw A → 3V3 (USB)    Throw B → GND (BLE)
-//
-//   Mode switch (SW2):
-//     Common → D3    Throw A → 3V3 (CC)     Throw B → GND (PitchBend)
-//
-// Arduino IDE:
-//   Board : XIAO_ESP32S3
-//   USB   : USB-OTG (TinyUSB)
-//
-// Libraries (Arduino Library Manager):
-//   SparkFun VL53L1X
-//   Adafruit VL6180X
-//   Adafruit NeoPixel
+// Libraries: SparkFun VL53L1X, Adafruit VL6180X, Adafruit NeoPixel,
+//            Adafruit SSD1306, Adafruit GFX
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 #define DEBUG           1
 
-// I2C
 #define I2C_SDA         5
 #define I2C_SCL         6
 #define I2C_FREQ        400000
 
-// MIDI
 #define MIDI_CH         1
-#define CC_DIST         20          // VL53L1X distance (long range)
-#define CC_VEL          21          // VL53L1X hand velocity
-#define CC_CLOSE        22          // VL6180X distance (close range)
+#define MIDI_CH0        (MIDI_CH - 1)
+#define CC_DIST         20
+#define CC_VEL          21
+#define CC_CLOSE        22
 #define BLE_NAME        "MidiGuitar"
 
-// VL53L1X — long-range sensor (main cavity)
 #define DIST_MIN_MM     10
 #define DIST_MAX_MM     500
-#define VL53_ADDR       0x30        // reassigned at boot (default 0x29 → 0x30)
-#define XSHUT_PIN       43          // GPIO43 (XIAO D6) — hold LOW to sleep VL53L1X
+#define VL53_ADDR       0x30
+#define XSHUT_VL53      43
+#define XSHUT_VL6       44
 
-// VL6180X — close-range sensor (small cavity)
 #define CLOSE_MIN_MM    5
 #define CLOSE_MAX_MM    100
-// stays at default address 0x29
 
-// Timing & smoothing
-#define POLL_MS         20          // ~50 Hz
+#define POLL_MS         20
 #define EMA_ALPHA       0.2f
-#define EMA_ALPHA_CLOSE 0.3f        // lighter smoothing for close sensor (faster response)
+#define EMA_ALPHA_CLOSE 0.3f
 
-// Velocity
 #define VEL_DEAD_MM     2.0f
 #define VEL_MAX_MM      30.0f
 
-// Response curve
 #define CURVE_LINEAR    0
 #define CURVE_LOG       1
 #define CURVE_EXP       2
 #define CURVE           CURVE_LINEAR
 
-// Pins
-#define STRIP_PIN       2           // GPIO2 (XIAO D1)
-#define SW_TRANSPORT    3           // GPIO3 (XIAO D2)
-#define SW_MODE         4           // GPIO4 (XIAO D3)
+#define STRIP_PIN       2
+#define SW_TRANSPORT    3
+#define BTN_BYPASS      4
+#define ENC_A           7
+#define ENC_B           8
+#define ENC_PUSH        9
 
-// NeoPixel ring
 #define NUM_PIXELS      16
 #define STRIP_BRIGHT    40
+
+#define OLED_WIDTH      128
+#define OLED_HEIGHT     64
+#define OLED_ADDR       0x3C
+
+#define NUM_PAGES       3
+#define DEBOUNCE_MS     200
 
 // ─── Includes ────────────────────────────────────────────────────────────────
 
@@ -116,6 +97,8 @@
 #include <Adafruit_VL6180X.h>
 #include <math.h>
 #include <Adafruit_NeoPixel.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -124,7 +107,11 @@
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 enum Mode      : uint8_t { MODE_CC, MODE_PITCHBEND, MODE_COUNT };
-enum Transport : uint8_t { TRANSPORT_USB, TRANSPORT_BLE };
+enum Transport : uint8_t { TRANSPORT_USB, TRANSPORT_BLE, TRANSPORT_BOTH, TRANSPORT_COUNT };
+enum Page      : uint8_t { PAGE_LIVE, PAGE_TRANSPORT, PAGE_MODE };
+
+static const char *transportNames[] = { "USB", "BLE", "BOTH" };
+static const char *modeNames[]      = { "CC", "PitchBend" };
 
 // ─── BLE MIDI ────────────────────────────────────────────────────────────────
 
@@ -132,6 +119,7 @@ enum Transport : uint8_t { TRANSPORT_USB, TRANSPORT_BLE };
 #define BLE_MIDI_CHR   "7772E5DB-3868-4112-A1A9-F2669D106BF3"
 
 static bool bleConnected = false;
+static bool bleInitDone  = false;
 
 class MidiServerCB : public BLEServerCallbacks {
     void onConnect(BLEServer *)    override { bleConnected = true;  }
@@ -141,37 +129,74 @@ class MidiServerCB : public BLEServerCallbacks {
     }
 };
 
+static MidiServerCB midiServerCB;
+
 // ─── Globals ─────────────────────────────────────────────────────────────────
 
 static USBMIDI             usbMidi;
-static SFEVL53L1X          sensorLong;          // VL53L1X — main, long range
-static Adafruit_VL6180X    sensorClose;         // VL6180X — small cavity, close range
+static SFEVL53L1X          sensorLong;
+static Adafruit_VL6180X    sensorClose;
 static bool                sensorCloseOk = false;
 static Adafruit_NeoPixel   ring(NUM_PIXELS, STRIP_PIN, NEO_GRB + NEO_KHZ800);
+static Adafruit_SSD1306    oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 static BLECharacteristic  *bleChr = nullptr;
 
-// Transport & mode
 static Transport transport = TRANSPORT_USB;
 static Mode      mode      = MODE_CC;
+static bool      bypassed  = false;
 
-// VL53L1X state (long range)
+// VL53L1X state
 static float   ema        = -1.0f;
 static float   prevEma    = -1.0f;
 static int16_t prevDistCC = -1;
 static int16_t prevVelCC  = -1;
 static int16_t prevBend   = -1;
 
-// VL6180X state (close range)
-static float   emaClose     = -1.0f;
-static int16_t prevCloseCC  = -1;
+// VL6180X state
+static float   emaClose    = -1.0f;
+static int16_t prevCloseCC = -1;
 
-// Display value for ring (0–127)
-static int16_t displayDist = 0;
+// Live values (drive ring + OLED)
+static int16_t liveDistCC  = 0;
+static int16_t liveVelCC   = 0;
+static int16_t liveCloseCC = 0;
+static int16_t liveBend    = 0;
 
 // Timing
 static unsigned long tPoll = 0;
+static unsigned long tOled = 0;
 
-// ─── Response curve ──────────────────────────────────────────────────────────
+// ─── Encoder ─────────────────────────────────────────────────────────────────
+
+static volatile int8_t encDelta = 0;
+static unsigned long   encPushTime = 0;
+
+// EC11 encoders produce 4 Gray code transitions per detent.
+// Accumulate raw transitions and only emit a step every 4.
+static void IRAM_ATTR encISR() {
+    static uint8_t prevState = 0;
+    static int8_t  rawCount  = 0;
+    uint8_t state = (digitalRead(ENC_A) << 1) | digitalRead(ENC_B);
+    uint8_t combined = (prevState << 2) | state;
+    switch (combined) {
+        case 0b0001: case 0b0111: case 0b1110: case 0b1000:
+            rawCount++; break;
+        case 0b0010: case 0b1011: case 0b1101: case 0b0100:
+            rawCount--; break;
+    }
+    prevState = state;
+    if (rawCount >= 4)  { encDelta++;  rawCount -= 4; }
+    if (rawCount <= -4) { encDelta--;  rawCount += 4; }
+}
+
+// ─── Menu state ──────────────────────────────────────────────────────────────
+
+static Page     currentPage = PAGE_LIVE;
+static bool     editing     = false;
+static uint8_t  editCursor  = 0;
+static bool     oledDirty   = true;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 static float applyCurve(float t) {
 #if CURVE == CURVE_LOG
@@ -183,11 +208,29 @@ static float applyCurve(float t) {
 #endif
 }
 
+static void updateEma(float &val, float sample, float alpha) {
+    if (val < 0.0f) val = sample;
+    else            val = alpha * sample + (1.0f - alpha) * val;
+}
+
+static float normAndCurve(float val, float lo, float hi) {
+    float norm = (val - lo) / (hi - lo);
+    return applyCurve(constrain(norm, 0.0f, 1.0f));
+}
+
+static uint8_t wrapIndex(int8_t val, uint8_t count) {
+    if (val < 0) return count - 1;
+    if (val >= count) return 0;
+    return (uint8_t)val;
+}
+
+static bool usesUSB() { return transport == TRANSPORT_USB || transport == TRANSPORT_BOTH; }
+static bool usesBLE() { return transport == TRANSPORT_BLE || transport == TRANSPORT_BOTH; }
+
 // ─── BLE MIDI send ──────────────────────────────────────────────────────────
 
 static void bleSend(uint8_t status, uint8_t d1, uint8_t d2) {
     if (!bleConnected || !bleChr) return;
-
     uint16_t ts  = millis() & 0x1FFF;
     uint8_t  pkt[5] = {
         (uint8_t)(0x80 | (ts >> 7)),
@@ -198,35 +241,32 @@ static void bleSend(uint8_t status, uint8_t d1, uint8_t d2) {
     bleChr->notify();
 }
 
-// ─── Abstracted MIDI output ─────────────────────────────────────────────────
+// ─── MIDI output ────────────────────────────────────────────────────────────
 
-static void sendCC(uint8_t ch, uint8_t cc, uint8_t val) {
-    if (transport == TRANSPORT_USB)
-        usbMidi.controlChange(cc, val, ch + 1);
-    else
-        bleSend(0xB0 | (ch & 0x0F), cc, val);
+static void sendCC(uint8_t cc, uint8_t val) {
+    if (bypassed) return;
+    if (usesUSB()) usbMidi.controlChange(cc, val, MIDI_CH);
+    if (usesBLE()) bleSend(0xB0 | (MIDI_CH0 & 0x0F), cc, val);
 }
 
-static void sendPitchBend(uint8_t ch, uint16_t bend) {
-    if (transport == TRANSPORT_USB) {
-        usbMidi.pitchBend((uint16_t)bend, (uint8_t)(ch + 1));
-    } else {
-        bleSend(0xE0 | (ch & 0x0F), bend & 0x7F, (bend >> 7) & 0x7F);
-    }
+static void sendPitchBend(uint16_t bend) {
+    if (bypassed) return;
+    if (usesUSB()) usbMidi.pitchBend(bend, MIDI_CH);
+    if (usesBLE()) bleSend(0xE0 | (MIDI_CH0 & 0x0F), bend & 0x7F, (bend >> 7) & 0x7F);
 }
 
 // ─── Sensor init ─────────────────────────────────────────────────────────────
-// Both sensors default to I2C address 0x29.  At boot we hold the VL53L1X
-// in shutdown via XSHUT, init the VL6180X at 0x29, then wake the VL53L1X
-// and reassign it to 0x30.
 
 static bool initSensors() {
-    // ── Step 1: shut down VL53L1X so only VL6180X is on the bus ──
-    pinMode(XSHUT_PIN, OUTPUT);
-    digitalWrite(XSHUT_PIN, LOW);
+    pinMode(XSHUT_VL53, OUTPUT);
+    digitalWrite(XSHUT_VL53, LOW);
+    pinMode(XSHUT_VL6, OUTPUT);
+    digitalWrite(XSHUT_VL6, LOW);
     delay(10);
 
-    // ── Step 2: init VL6180X at default 0x29 ──
+    // VL6180X first — shares default 0x29 with VL53
+    digitalWrite(XSHUT_VL6, HIGH);
+    delay(10);
     if (sensorClose.begin()) {
         sensorCloseOk = true;
 #if DEBUG
@@ -234,29 +274,25 @@ static bool initSensors() {
 #endif
     } else {
 #if DEBUG
-        Serial.println("VL6180X not found — continuing without close sensor");
+        Serial.println("VL6180X not found");
 #endif
     }
 
-    // ── Step 3: wake VL53L1X and reassign to 0x30 ──
-    digitalWrite(XSHUT_PIN, HIGH);
+    // VL53L1X — reassign to 0x30
+    digitalWrite(XSHUT_VL53, HIGH);
     delay(10);
-
     sensorLong.begin(Wire);
     sensorLong.setI2CAddress(VL53_ADDR);
-
     sensorLong.setTimingBudgetInMs(POLL_MS);
     sensorLong.setIntermeasurementPeriod(POLL_MS);
     sensorLong.startRanging();
 
-    // Verify VL53L1X is alive
     unsigned long t0 = millis();
     while (!sensorLong.checkForDataReady()) {
         if (millis() - t0 > 200) return false;
         delay(5);
     }
     sensorLong.clearInterrupt();
-
 #if DEBUG
     Serial.printf("VL53L1X OK at 0x%02X\n", VL53_ADDR);
 #endif
@@ -266,9 +302,10 @@ static bool initSensors() {
 // ─── BLE init ────────────────────────────────────────────────────────────────
 
 static void initBLE() {
+    if (bleInitDone) return;
     BLEDevice::init(BLE_NAME);
     BLEServer *srv = BLEDevice::createServer();
-    srv->setCallbacks(new MidiServerCB());
+    srv->setCallbacks(&midiServerCB);
 
     BLEService *svc = srv->createService(BLE_MIDI_SVC);
     bleChr = svc->createCharacteristic(
@@ -285,23 +322,27 @@ static void initBLE() {
     adv->setScanResponse(true);
     adv->setMinPreferred(0x06);
     adv->start();
+    bleInitDone = true;
 }
 
 // ─── NeoPixel ring ───────────────────────────────────────────────────────────
 
 static uint32_t modeColor() {
-    if (transport == TRANSPORT_USB)
-        return mode == MODE_CC ? ring.Color(0, 255, 0)
-                               : ring.Color(180, 0, 255);
-    else
-        return mode == MODE_CC ? ring.Color(0, 80, 255)
-                               : ring.Color(0, 220, 220);
+    if (bypassed) return ring.Color(40, 40, 0);
+
+    if (usesUSB() && !usesBLE())
+        return mode == MODE_CC ? ring.Color(0, 255, 0)   : ring.Color(180, 0, 255);
+    if (usesBLE() && !usesUSB())
+        return mode == MODE_CC ? ring.Color(0, 80, 255)  : ring.Color(0, 220, 220);
+    return mode == MODE_CC     ? ring.Color(0, 200, 100) : ring.Color(100, 0, 200);
 }
 
 static void showRing(int16_t val) {
     static int16_t lastShown = -1;
-    if (val == lastShown) return;
+    static bool    lastBypassed = false;
+    if (val == lastShown && bypassed == lastBypassed) return;
     lastShown = val;
+    lastBypassed = bypassed;
 
     int numLit = (val * NUM_PIXELS + 63) / 127;
     numLit = constrain(numLit, 0, NUM_PIXELS);
@@ -328,31 +369,191 @@ static void showError() {
 }
 
 static void updateRing() {
-    if (transport == TRANSPORT_BLE && !bleConnected) {
+    if (usesBLE() && !bleConnected && !usesUSB()) {
         showChase();
         return;
     }
-    showRing(displayDist);
+
+    // Only touch brightness when bypass state changes
+    static bool lastBypass = false;
+    if (bypassed != lastBypass) {
+        ring.setBrightness(bypassed ? STRIP_BRIGHT / 2 : STRIP_BRIGHT);
+        lastBypass = bypassed;
+    }
+
+    showRing(liveDistCC);
 }
 
-// ─── Read switches ───────────────────────────────────────────────────────────
+// ─── OLED display ────────────────────────────────────────────────────────────
 
-static void readSwitches() {
-    Mode newM = digitalRead(SW_MODE) == HIGH
-                ? MODE_CC : MODE_PITCHBEND;
+static void drawBar(int16_t x, int16_t y, int16_t w, int16_t val, int16_t maxVal) {
+    int16_t filled = constrain((int32_t)val * w / maxVal, 0, w);
+    oled.drawRect(x, y, w, 8, SSD1306_WHITE);
+    oled.fillRect(x, y, filled, 8, SSD1306_WHITE);
+}
 
-    if (newM != mode) {
-        mode = newM;
-        prevDistCC = -1;
-        prevBend   = -1;
-        displayDist = -1;
+static void drawPageLive() {
+    // Status line: transport, mode, mute
+    oled.setCursor(0, 0);
+    oled.print(transportNames[transport]);
+    oled.print(" ");
+    oled.print(modeNames[mode]);
+    oled.print("  Ch");
+    oled.print(MIDI_CH);
+    if (usesBLE()) {
+        oled.setCursor(80, 0);
+        oled.print(bleConnected ? "BLE:ON" : "BLE:..");
+    }
+    if (bypassed) {
+        oled.setCursor(OLED_WIDTH - 24, 0);
+        oled.print("MUTE");
+    }
+
+    // CC bars — full width, more vertical space
+    oled.setCursor(0, 14);
+    oled.printf("CC%d:", CC_DIST);
+    drawBar(30, 14, 82, liveDistCC, 127);
+    oled.setCursor(115, 14);
+    oled.printf("%3d", liveDistCC);
+
+    oled.setCursor(0, 27);
+    oled.printf("CC%d:", CC_VEL);
+    drawBar(30, 27, 82, liveVelCC, 127);
+    oled.setCursor(115, 27);
+    oled.printf("%3d", liveVelCC);
+
+    oled.setCursor(0, 40);
+    if (sensorCloseOk) {
+        oled.printf("CC%d:", CC_CLOSE);
+        drawBar(30, 40, 82, liveCloseCC, 127);
+        oled.setCursor(115, 40);
+        oled.printf("%3d", liveCloseCC);
+    } else {
+        oled.print("CC22: --");
+    }
+
+    if (mode == MODE_PITCHBEND) {
+        oled.setCursor(0, 55);
+        oled.printf("PB: %5d", liveBend);
+    }
+}
+
+// Shared list-selection page renderer
+static void drawSelectPage(const char *title, const char **names,
+                            uint8_t count, uint8_t activeIdx) {
+    oled.setCursor(0, 0);
+    oled.print(title);
+
+    for (uint8_t i = 0; i < count; i++) {
+        oled.setCursor(8, 16 + i * 14);
+        if (editing && editCursor == i)
+            oled.print("> ");
+        else if (!editing && activeIdx == i)
+            oled.print("* ");
+        else
+            oled.print("  ");
+        oled.print(names[i]);
+        if (activeIdx == i) oled.print(" [active]");
+    }
+
+    oled.setCursor(0, 55);
+    oled.print(editing ? "Turn=select Push=set" : "Push to edit");
+}
+
+static void refreshOLED() {
+    oled.clearDisplay();
+    oled.setTextSize(1);
+    oled.setTextColor(SSD1306_WHITE);
+
+    switch (currentPage) {
+        case PAGE_LIVE:      drawPageLive(); break;
+        case PAGE_TRANSPORT: drawSelectPage("Transport output:",
+                                 transportNames, TRANSPORT_COUNT,
+                                 (uint8_t)transport); break;
+        case PAGE_MODE:      drawSelectPage("MIDI mode:",
+                                 modeNames, MODE_COUNT,
+                                 (uint8_t)mode); break;
+    }
+
+    oled.display();
+    oledDirty = false;
+}
+
+// ─── Menu logic ──────────────────────────────────────────────────────────────
+
+static void handleEncoder() {
+    // Atomic read-then-clear
+    noInterrupts();
+    int8_t delta = encDelta;
+    encDelta = 0;
+    interrupts();
+
+    bool pushed = false;
+    if (digitalRead(ENC_PUSH) == LOW && millis() - encPushTime > DEBOUNCE_MS) {
+        pushed = true;
+        encPushTime = millis();
+    }
+
+    if (delta == 0 && !pushed) return;
+    oledDirty = true;
+
+    if (!editing) {
+        if (delta != 0)
+            currentPage = (Page)wrapIndex((int8_t)currentPage + (delta > 0 ? 1 : -1), NUM_PAGES);
+
+        if (pushed && currentPage != PAGE_LIVE) {
+            editing = true;
+            editCursor = (currentPage == PAGE_TRANSPORT) ? (uint8_t)transport : (uint8_t)mode;
+        }
+    } else {
+        if (delta != 0) {
+            uint8_t maxItems = (currentPage == PAGE_TRANSPORT) ? TRANSPORT_COUNT : MODE_COUNT;
+            editCursor = wrapIndex((int8_t)editCursor + (delta > 0 ? 1 : -1), maxItems);
+        }
+
+        if (pushed) {
+            if (currentPage == PAGE_TRANSPORT) {
+                Transport newT = (Transport)editCursor;
+                if (newT != transport) {
+                    transport = newT;
+                    if (usesBLE() && !bleInitDone) initBLE();
 #if DEBUG
-        Serial.printf("Mode -> %s\n", mode == MODE_CC ? "CC" : "PitchBend");
+                    Serial.printf("Transport -> %s\n", transportNames[transport]);
+#endif
+                }
+            } else if (currentPage == PAGE_MODE) {
+                Mode newM = (Mode)editCursor;
+                if (newM != mode) {
+                    mode = newM;
+                    prevDistCC = -1;
+                    prevBend   = -1;
+                    liveDistCC = -1;
+#if DEBUG
+                    Serial.printf("Mode -> %s\n", modeNames[mode]);
+#endif
+                }
+            }
+            editing = false;
+        }
+    }
+}
+
+// ─── Bypass button ──────────────────────────────────────────────────────────
+
+static unsigned long btnTime = 0;
+
+static void readBypass() {
+    if (digitalRead(BTN_BYPASS) == LOW && millis() - btnTime > DEBOUNCE_MS) {
+        bypassed = !bypassed;
+        btnTime = millis();
+        oledDirty = true;
+#if DEBUG
+        Serial.printf("Bypass -> %s\n", bypassed ? "ON" : "OFF");
 #endif
     }
 }
 
-// ─── Poll VL53L1X (long range) → CC20/CC21/PitchBend ────────────────────────
+// ─── Poll VL53L1X → CC20/CC21/PitchBend ─────────────────────────────────────
 
 static void pollLong() {
     if (!sensorLong.checkForDataReady()) return;
@@ -361,97 +562,68 @@ static void pollLong() {
     if (sensorLong.getRangeStatus() == 0)
         dist = sensorLong.getDistance();
     sensorLong.clearInterrupt();
-
     if (dist < 0) return;
 
-    // ── Update EMA ──
-    if (ema < 0.0f) {
-        ema     = (float)dist;
-        prevEma = ema;
-    } else {
-        prevEma = ema;
-        ema = EMA_ALPHA * dist + (1.0f - EMA_ALPHA) * ema;
-    }
+    prevEma = ema;
+    updateEma(ema, (float)dist, EMA_ALPHA);
 
-    // ── Normalize + curve ──
-    float norm   = (ema - DIST_MIN_MM) / (float)(DIST_MAX_MM - DIST_MIN_MM);
-    float curved = applyCurve(constrain(norm, 0.0f, 1.0f));
-    uint8_t ch   = MIDI_CH - 1;
+    float curved = normAndCurve(ema, DIST_MIN_MM, DIST_MAX_MM);
 
-    // ── Distance → CC or pitch bend ──
     if (mode == MODE_CC) {
-        int16_t cc = (int16_t)lroundf(curved * 127.0f);
-        cc = constrain(cc, 0, 127);
-        displayDist = cc;
-
+        int16_t cc = constrain((int16_t)lroundf(curved * 127.0f), 0, 127);
+        liveDistCC = cc;
         if (cc != prevDistCC) {
             prevDistCC = cc;
-            sendCC(ch, CC_DIST, cc);
+            sendCC(CC_DIST, cc);
 #if DEBUG
-            Serial.printf("long=%d  ema=%.1f  CC%d=%d\n",
-                          dist, ema, CC_DIST, cc);
+            Serial.printf("long=%d ema=%.1f CC%d=%d\n", dist, ema, CC_DIST, cc);
 #endif
         }
     } else {
-        int16_t bend = (int16_t)lroundf(curved * 16383.0f);
-        bend = constrain(bend, (int16_t)0, (int16_t)16383);
-        displayDist = bend / (16383 / 127);
-
+        int16_t bend = constrain((int16_t)lroundf(curved * 16383.0f), (int16_t)0, (int16_t)16383);
+        liveBend = bend;
+        liveDistCC = bend / (16383 / 127);
         if (bend != prevBend) {
             prevBend = bend;
-            sendPitchBend(ch, bend);
+            sendPitchBend(bend);
 #if DEBUG
-            Serial.printf("long=%d  ema=%.1f  bend=%d\n", dist, ema, bend);
+            Serial.printf("long=%d ema=%.1f bend=%d\n", dist, ema, bend);
 #endif
         }
     }
 
-    // ── Velocity → CC21 (always active) ──
     float delta = fabsf(ema - prevEma);
     if (delta < VEL_DEAD_MM) delta = 0.0f;
-
-    int16_t velCC = (int16_t)lroundf(
-        constrain(delta / VEL_MAX_MM * 127.0f, 0.0f, 127.0f));
-
+    int16_t velCC = (int16_t)lroundf(constrain(delta / VEL_MAX_MM * 127.0f, 0.0f, 127.0f));
+    liveVelCC = velCC;
     if (velCC != prevVelCC) {
         prevVelCC = velCC;
-        sendCC(ch, CC_VEL, velCC);
+        sendCC(CC_VEL, velCC);
 #if DEBUG
-        if (velCC > 0)
-            Serial.printf("  velocity=%.1f  CC%d=%d\n", delta, CC_VEL, velCC);
+        if (velCC > 0) Serial.printf("  vel=%.1f CC%d=%d\n", delta, CC_VEL, velCC);
 #endif
     }
 }
 
-// ─── Poll VL6180X (close range) → CC22 ──────────────────────────────────────
+// ─── Poll VL6180X → CC22 ────────────────────────────────────────────────────
 
 static void pollClose() {
     if (!sensorCloseOk) return;
-
-    uint8_t status = sensorClose.readRangeStatus();
-    if (status != VL6180X_ERROR_NONE) return;
+    if (sensorClose.readRangeStatus() != VL6180X_ERROR_NONE) return;
 
     int16_t dist = sensorClose.readRange();
     if (dist < CLOSE_MIN_MM || dist > CLOSE_MAX_MM) return;
 
-    // ── Update EMA ──
-    if (emaClose < 0.0f)
-        emaClose = (float)dist;
-    else
-        emaClose = EMA_ALPHA_CLOSE * dist + (1.0f - EMA_ALPHA_CLOSE) * emaClose;
+    updateEma(emaClose, (float)dist, EMA_ALPHA_CLOSE);
+    float curved = normAndCurve(emaClose, CLOSE_MIN_MM, CLOSE_MAX_MM);
 
-    float norm = (emaClose - CLOSE_MIN_MM) / (float)(CLOSE_MAX_MM - CLOSE_MIN_MM);
-    float curved = applyCurve(constrain(norm, 0.0f, 1.0f));
-
-    int16_t cc = (int16_t)lroundf(curved * 127.0f);
-    cc = constrain(cc, 0, 127);
-
+    int16_t cc = constrain((int16_t)lroundf(curved * 127.0f), 0, 127);
+    liveCloseCC = cc;
     if (cc != prevCloseCC) {
         prevCloseCC = cc;
-        sendCC(MIDI_CH - 1, CC_CLOSE, cc);
+        sendCC(CC_CLOSE, cc);
 #if DEBUG
-        Serial.printf("close=%d  ema=%.1f  CC%d=%d\n",
-                      dist, emaClose, CC_CLOSE, cc);
+        Serial.printf("close=%d ema=%.1f CC%d=%d\n", dist, emaClose, CC_CLOSE, cc);
 #endif
     }
 }
@@ -462,56 +634,79 @@ void setup() {
     Serial.begin(115200);
     delay(2000);
 
-    // ── Switches ──
     pinMode(SW_TRANSPORT, INPUT_PULLUP);
-    pinMode(SW_MODE, INPUT_PULLUP);
-    transport = digitalRead(SW_TRANSPORT) == HIGH
-                ? TRANSPORT_USB : TRANSPORT_BLE;
-    mode = digitalRead(SW_MODE) == HIGH
-           ? MODE_CC : MODE_PITCHBEND;
+    transport = digitalRead(SW_TRANSPORT) == HIGH ? TRANSPORT_USB : TRANSPORT_BLE;
 
-    // ── USB ──
+    pinMode(BTN_BYPASS, INPUT_PULLUP);
+
+    pinMode(ENC_A, INPUT_PULLUP);
+    pinMode(ENC_B, INPUT_PULLUP);
+    pinMode(ENC_PUSH, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
+
     USB.enableDFU();
-    if (transport == TRANSPORT_USB)
-        usbMidi.begin();
+    usbMidi.begin();
     USB.begin();
 
-    // ── BLE ──
-    if (transport == TRANSPORT_BLE)
-        initBLE();
+    if (usesBLE()) initBLE();
 
-    // ── I2C + sensors ──
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ);
 
-    // ── NeoPixel ring ──
+    if (!oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+#if DEBUG
+        Serial.println("OLED not found");
+#endif
+    } else {
+        oled.clearDisplay();
+        oled.setTextSize(1);
+        oled.setTextColor(SSD1306_WHITE);
+        oled.setCursor(20, 25);
+        oled.println("MidiGuitar");
+        oled.setCursor(30, 40);
+        oled.println("starting...");
+        oled.display();
+    }
+
     ring.begin();
     ring.setBrightness(STRIP_BRIGHT);
     ring.show();
 
-    // ── Both ToF sensors ──
     if (!initSensors()) {
-        Serial.println("ERR: VL53L1X not responding — check wiring");
+        Serial.println("ERR: VL53L1X not responding");
+        oled.clearDisplay();
+        oled.setCursor(0, 25);
+        oled.println("VL53L1X ERROR");
+        oled.println("Check wiring!");
+        oled.display();
         while (true) { showError(); delay(50); }
     }
 
 #if DEBUG
-    Serial.printf("Ready — %s %s  CC%d+%d+%s  ch%d  [%s]\n",
-                  transport == TRANSPORT_USB ? "USB" : "BLE",
-                  mode == MODE_CC ? "CC" : "Bend",
+    Serial.printf("Ready — %s %s  CC%d+%d+%s  ch%d\n",
+                  transportNames[transport], modeNames[mode],
                   CC_DIST, CC_VEL,
-                  sensorCloseOk ? String(CC_CLOSE).c_str() : "no close",
-                  MIDI_CH,
-                  CURVE == CURVE_LOG ? "log"
-                  : CURVE == CURVE_EXP ? "exp" : "lin");
+                  sensorCloseOk ? String(CC_CLOSE).c_str() : "none",
+                  MIDI_CH);
 #endif
+
+    oledDirty = true;
 }
 
 void loop() {
-    if (millis() - tPoll < POLL_MS) return;
-    tPoll = millis();
+    handleEncoder();
+    readBypass();
 
-    readSwitches();
-    pollLong();
-    pollClose();
-    updateRing();
+    if (millis() - tPoll >= POLL_MS) {
+        tPoll = millis();
+        pollLong();
+        pollClose();
+        updateRing();
+        if (currentPage == PAGE_LIVE) oledDirty = true;
+    }
+
+    if (oledDirty && millis() - tOled >= 66) {
+        tOled = millis();
+        refreshOLED();
+    }
 }
