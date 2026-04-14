@@ -26,13 +26,11 @@
 #define CURVE_LINEAR    0
 #define CURVE_LOG       1
 #define CURVE_EXP       2
-#define STRIP_PIN       2
-#define SW_TRANSPORT    3
-#define BTN_BYPASS      4
+#define STRIP_PIN       9
 #define BTN_EDIT        44
 #define ENC_A           7
 #define ENC_B           8
-#define ENC_PUSH        9
+#define ENC_PUSH        4
 #define NUM_PIXELS      16
 #define OLED_W          128
 #define OLED_H          64
@@ -1027,19 +1025,6 @@ static void handleEncoder() {
     }
 }
 
-// ─── Bypass ──────────────────────────────────────────────────────────────────
-
-static unsigned long btnTime = 0;
-
-static void readBypass() {
-    if (digitalRead(BTN_BYPASS) == LOW && millis() - btnTime > DEBOUNCE_MS) {
-        bypassed = !bypassed;
-        btnTime = millis();
-        oledDirty = true;
-        showToast(bypassed ? "MUTED" : "ACTIVE");
-    }
-}
-
 // ─── Edit button (settings page) ────────────────────────────────────────────
 
 static void readEditBtn() {
@@ -1099,9 +1084,6 @@ void setup() {
     // Load saved settings from NVS
     loadSettings();
 
-    pinMode(SW_TRANSPORT, INPUT_PULLUP);
-    transport = digitalRead(SW_TRANSPORT) == HIGH ? TR_USB : TR_BLE;
-    pinMode(BTN_BYPASS, INPUT_PULLUP);
     pinMode(BTN_EDIT, INPUT_PULLUP);
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
@@ -1158,21 +1140,7 @@ void loop() {
     esp_task_wdt_reset();
 
     handleEncoder();
-    readBypass();
     readEditBtn();
-
-    // DIP switch live-read (transport change without reboot)
-    static unsigned long dipTime = 0;
-    if (millis() - dipTime > 200) {
-        dipTime = millis();
-        Transport dipVal = digitalRead(SW_TRANSPORT) == HIGH ? TR_USB : TR_BLE;
-        if (dipVal != transport) {
-            transport = dipVal;
-            if (wantsBLE() && !bleInitDone) initBLE();
-            oledDirty = true;
-            triggerWipe();
-        }
-    }
 
     // Wake from screensaver on any encoder/button/sensor activity
     if (encDelta != 0 || !encPushPrev || liveVel > 5) {
