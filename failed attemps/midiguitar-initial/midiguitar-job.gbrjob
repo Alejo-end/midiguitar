@@ -5,7 +5,7 @@
       "Application": "Pcbnew",
       "Version": "9.0.7"
     },
-    "CreationDate": "2026-04-12T12:53:26+03:00"
+    "CreationDate": "2026-04-12T15:57:49+03:00"
   },
   "GeneralSpecs": {
     "ProjectId": {
@@ -37,18 +37,8 @@
       "FilePolarity": "Positive"
     },
     {
-      "Path": "midiguitar-B_Cu.gbr",
-      "FileFunction": "Copper,L2,Bot",
-      "FilePolarity": "Positive"
-    },
-    {
       "Path": "midiguitar-F_Paste.gbr",
       "FileFunction": "SolderPaste,Top",
-      "FilePolarity": "Positive"
-    },
-    {
-      "Path": "midiguitar-B_Paste.gbr",
-      "FileFunction": "SolderPaste,Bot",
       "FilePolarity": "Positive"
     },
     {
@@ -57,19 +47,9 @@
       "FilePolarity": "Positive"
     },
     {
-      "Path": "midiguitar-B_Silkscreen.gbr",
-      "FileFunction": "Legend,Bot",
+      "Path": "midiguitar-User_Drawings.gbr",
+      "FileFunction": "Other,User",
       "FilePolarity": "Positive"
-    },
-    {
-      "Path": "midiguitar-F_Mask.gbr",
-      "FileFunction": "SolderMask,Top",
-      "FilePolarity": "Negative"
-    },
-    {
-      "Path": "midiguitar-B_Mask.gbr",
-      "FileFunction": "SolderMask,Bot",
-      "FilePolarity": "Negative"
     },
     {
       "Path": "midiguitar-Edge_Cuts.gbr",

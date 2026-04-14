@@ -1,0 +1,29 @@
+%TF.GenerationSoftware,KiCad,Pcbnew,9.0.7*%
+%TF.CreationDate,2026-04-13T19:34:04+03:00*%
+%TF.ProjectId,finalMidiGuitar,66696e61-6c4d-4696-9469-477569746172,rev?*%
+%TF.SameCoordinates,Original*%
+%TF.FileFunction,NonPlated,1,2,NPTH,Rout*%
+%TF.FilePolarity,Positive*%
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW 9.0.7) date 2026-04-13 19:34:04*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+G04 aperture for slot hole*
+%TA.AperFunction,ComponentDrill*%
+%ADD10C,2.900000*%
+%TD*%
+G04 APERTURE END LIST*
+D10*
+%TO.C,J4*%
+X121617000Y-113968500D02*
+X121617000Y-114868500D01*
+X121617000Y-136320500D02*
+X121617000Y-137220500D01*
+X144731000Y-113968500D02*
+X144731000Y-114868500D01*
+X144731000Y-136320500D02*
+X144731000Y-137220500D01*
+M02*
