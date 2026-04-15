@@ -19,6 +19,7 @@
 #define BLE_NAME        "MidiGuitar"
 #define VL53_ADDR       0x30
 #define XSHUT_VL53      43
+#define VL53_INT        1
 #define POLL_MS         20
 #define EMA_ALPHA       0.2f
 #define VEL_DEAD_MM     2.0f
@@ -124,7 +125,7 @@ static bool    editBtnPrev     = true;    // INPUT_PULLUP
 static Transport transport = TR_USB;
 static Mode      mode      = MODE_CC;
 static bool      bypassed  = false;
-static bool      sensorOK  = true;
+static bool      sensorOK  = false;
 
 static float   ema      = -1.0f;
 static float   prevEma  = -1.0f;
@@ -140,6 +141,14 @@ static unsigned long tPoll        = 0;
 static unsigned long tOled        = 0;
 static unsigned long lastActivity = 0;  // screensaver timer
 static bool          oledAsleep   = false;
+
+// ─── Sensor interrupt ────────────────────────────────────────────────────────
+
+static volatile bool sensorDataReady = false;
+
+static void IRAM_ATTR sensorISR() {
+    sensorDataReady = true;
+}
 
 // ─── Encoder ─────────────────────────────────────────────────────────────────
 
@@ -241,7 +250,7 @@ static bool initSensor() {
     delay(10);
     digitalWrite(XSHUT_VL53, HIGH);
     delay(10);
-    sensor.begin(Wire);
+    if (sensor.begin(Wire) != 0) return false;
     sensor.setI2CAddress(VL53_ADDR);
     sensor.setTimingBudgetInMs(POLL_MS);
     sensor.setIntermeasurementPeriod(POLL_MS);
@@ -252,6 +261,11 @@ static bool initSensor() {
         delay(5);
     }
     sensor.clearInterrupt();
+
+    // Attach data-ready interrupt (INT pin active LOW)
+    pinMode(VL53_INT, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(VL53_INT), sensorISR, FALLING);
+
     return true;
 }
 
@@ -286,11 +300,6 @@ static uint16_t modeHue() {
     if (wantsBLE() && !wantsUSB())
         return mode == MODE_CC ? 38229  : 32768;  // blue : cyan
     return mode == MODE_CC     ? 28000  : 45000;  // teal : violet
-}
-
-static uint32_t modeColor() {
-    if (bypassed) return ring.Color(40, 40, 0);
-    return ring.ColorHSV(modeHue(), 255, 255);
 }
 
 // Trigger a mode/transport wipe animation
@@ -334,13 +343,8 @@ static void showChase() {
     p++;
 }
 
-// Sensor error — red blink
-static void showError() {
-    ring.fill((millis() / 100) % 2 ? ring.Color(255, 0, 0) : 0);
-    ring.show();
-}
-
 static void updateRing() {
+    ring.setBrightness(stripBright);
     // BLE connection flash — overrides everything for 200ms
     if (millis() < bleFlashUntil) {
         ring.fill(ring.Color(0, 60, 255));
@@ -363,13 +367,8 @@ static void updateRing() {
     if (wantsBLE() && !bleConnected && !wantsUSB()) { showChase(); return; }
 
     // Bypass breathing
-    if (bypassed) {
-        ring.setBrightness(stripBright);
-        showBreathe();
-        return;
-    }
+    if (bypassed) { showBreathe(); return; }
 
-    ring.setBrightness(stripBright);
     showRing(liveDist);
 }
 
@@ -487,11 +486,9 @@ static void drawPageLive() {
         drawSegBar(barX, r1, barW, barH, liveDist, 127);
     }
 
-    // Value — large, right-aligned
-    oled.setTextSize(1);
+    // Value — right-aligned
     oled.setCursor(94, r1 - 1);
     oled.printf("%3d", liveDist);
-    oled.setTextSize(1);
 
     drawHLine(22);
 
@@ -506,10 +503,8 @@ static void drawPageLive() {
         drawSegBar(barX, r2, barW, barH, liveVel, 127);
     }
 
-    oled.setTextSize(1);
     oled.setCursor(94, r2 - 1);
     oled.printf("%3d", liveVel);
-    oled.setTextSize(1);
 
     drawHLine(34);
 
@@ -804,6 +799,8 @@ static void loadSettings() {
     curve      = prefs.getUChar("curve",      CURVE_DEFAULT);
     stripBright = prefs.getUChar("bright",    STRIP_BRIGHT_DEFAULT);
     distInvert = prefs.getBool("invert",      false);
+    uint8_t tr = prefs.getUChar("transport", TR_USB);
+    transport  = (tr < TR_COUNT) ? (Transport)tr : TR_USB;
     prefs.end();
 }
 
@@ -817,6 +814,7 @@ static void saveSettings() {
     prefs.putUChar("curve",    curve);
     prefs.putUChar("bright",   stripBright);
     prefs.putBool("invert",    distInvert);
+    prefs.putUChar("transport", transport);
     prefs.end();
     settingsDirty = false;
 }
@@ -929,6 +927,32 @@ static void playIntro() {
     ring.show();
 }
 
+// ─── Shared actions ──────────────────────────────────────────────────────────
+
+static void cycleTransport(int8_t dir) {
+    transport = (Transport)wrap((int8_t)transport + dir, TR_COUNT);
+    if (wantsBLE() && !bleInitDone) initBLE();
+    triggerWipe();
+    settingsDirty = true;
+    dirtyTime = millis();
+    const char *labels[] = { "USB", "BLE", "BOTH" };
+    showToast(labels[transport]);
+}
+
+static void cycleMode(int8_t dir) {
+    mode = (Mode)wrap((int8_t)mode + dir, MODE_COUNT);
+    prevDist = -1;
+    prevBend = -1;
+    liveDist = 0;
+    triggerWipe();
+    showToast(mode == MODE_CC ? "CC" : "BEND");
+}
+
+static void toggleBypass() {
+    bypassed = !bypassed;
+    showToast(bypassed ? "MUTED" : "ACTIVE");
+}
+
 // ─── Encoder + menu ──────────────────────────────────────────────────────────
 
 static void handleEncoder() {
@@ -957,10 +981,9 @@ static void handleEncoder() {
     }
     // Long-press: toggle bypass while still held
     if (encHeld && (millis() - encPushDown >= 500)) {
-        bypassed = !bypassed;
+        toggleBypass();
         encHeld = false;   // consume the gesture
         oledDirty = true;
-        showToast(bypassed ? "MUTED" : "ACTIVE");
 #if DEBUG
         Serial.printf("Bypass -> %d (long-press)\n", bypassed);
 #endif
@@ -987,28 +1010,8 @@ static void handleEncoder() {
                 ring.setBrightness(stripBright);
             } break;
 
-            case PG_TRANSPORT: {
-                transport = (Transport)wrap((int8_t)transport + (delta > 0 ? 1 : -1), TR_COUNT);
-                if (wantsBLE() && !bleInitDone) initBLE();
-                triggerWipe();
-                const char *labels[] = { "USB", "BLE", "BOTH" };
-                showToast(labels[transport]);
-#if DEBUG
-                Serial.printf("Transport -> %d\n", transport);
-#endif
-            } break;
-
-            case PG_MODE: {
-                mode = (Mode)wrap((int8_t)mode + (delta > 0 ? 1 : -1), MODE_COUNT);
-                prevDist = -1;
-                prevBend = -1;
-                liveDist = 0;
-                triggerWipe();
-                showToast(mode == MODE_CC ? "CC" : "BEND");
-#if DEBUG
-                Serial.printf("Mode -> %d\n", mode);
-#endif
-            } break;
+            case PG_TRANSPORT: cycleTransport(delta > 0 ? 1 : -1); break;
+            case PG_MODE:      cycleMode(delta > 0 ? 1 : -1);      break;
 
             case PG_SETTINGS: {
                 if (settingsEditing) {
@@ -1025,16 +1028,19 @@ static void handleEncoder() {
     }
 }
 
-// ─── Edit button (settings page) ────────────────────────────────────────────
+// ─── Button (SW1) — context-sensitive action per page ───────────────────────
 
 static void readEditBtn() {
     bool btnNow = digitalRead(BTN_EDIT) == LOW;
     if (btnNow && !editBtnPrev && millis() - editBtnTime > DEBOUNCE_MS) {
         editBtnTime = millis();
-        if (currentPage == PG_SETTINGS) {
-            settingsEditing = !settingsEditing;
-            oledDirty = true;
+        switch (currentPage) {
+            case PG_LIVE:      toggleBypass();       break;
+            case PG_TRANSPORT: cycleTransport(1);    break;
+            case PG_MODE:      cycleMode(1);         break;
+            case PG_SETTINGS:  settingsEditing = !settingsEditing; break;
         }
+        oledDirty = true;
     }
     editBtnPrev = btnNow;
     // Auto-exit edit mode when leaving settings page
@@ -1046,7 +1052,8 @@ static void readEditBtn() {
 // ─── Sensor poll ─────────────────────────────────────────────────────────────
 
 static void pollSensor() {
-    if (!sensor.checkForDataReady()) return;
+    if (!sensorDataReady) return;
+    sensorDataReady = false;
     int16_t dist = -1;
     if (sensor.getRangeStatus() == 0) dist = sensor.getDistance();
     sensor.clearInterrupt();
@@ -1107,7 +1114,6 @@ void setup() {
     ring.show();
 
     // Sensor init with retries — no hard halt
-    sensorOK = false;
     for (uint8_t attempt = 0; attempt < 3; attempt++) {
         if (initSensor()) { sensorOK = true; break; }
         Serial.printf("Sensor init attempt %d failed\n", attempt + 1);
@@ -1139,21 +1145,27 @@ void setup() {
 void loop() {
     esp_task_wdt_reset();
 
+    // Snapshot encoder delta before handlers consume it (for screensaver wake)
+    bool encMoved = (encDelta != 0);
+
     handleEncoder();
     readEditBtn();
 
-    // Wake from screensaver on any encoder/button/sensor activity
-    if (encDelta != 0 || !encPushPrev || liveVel > 5) {
-        lastActivity = millis();
-        if (oledAsleep) { oledAsleep = false; oledDirty = true; }
-    }
+    // Process sensor data as soon as interrupt fires (no polling delay)
+    if (sensorOK) pollSensor();
 
+    // Ring + OLED refresh at ~50fps
     if (millis() - tPoll >= POLL_MS) {
         tPoll = millis();
-        if (sensorOK) pollSensor();
         updateRing();
-        if (currentPage == PG_LIVE) oledDirty = true;
+        if (currentPage == PG_LIVE && sensorOK) oledDirty = true;
         if (currentPage == PG_SETTINGS && settingsEditing) oledDirty = true;
+    }
+
+    // Wake from screensaver on any encoder/button/sensor activity
+    if (encMoved || !encPushPrev || liveVel > 5) {
+        lastActivity = millis();
+        if (oledAsleep) { oledAsleep = false; oledDirty = true; }
     }
 
     // Debounced NVS save — 2s after last setting change
