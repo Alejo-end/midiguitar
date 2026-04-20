@@ -27,11 +27,11 @@
 #define CURVE_LINEAR    0
 #define CURVE_LOG       1
 #define CURVE_EXP       2
-#define STRIP_PIN       9
-#define BTN_EDIT        44
-#define ENC_A           7
-#define ENC_B           8
-#define ENC_PUSH        4
+#define STRIP_PIN       9       // D10 — level-shifted via U1 to NeoPixel
+#define BTN_EDIT        3       // D2  — SW1 tactile button
+#define ENC_A           7       // D8  — rotary encoder A
+#define ENC_B           8       // D9  — rotary encoder B
+#define ENC_PUSH        4       // D3  — encoder push switch
 #define NUM_PIXELS      16
 #define OLED_W          128
 #define OLED_H          64
