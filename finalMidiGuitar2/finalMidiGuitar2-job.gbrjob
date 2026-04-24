@@ -5,17 +5,17 @@
       "Application": "Pcbnew",
       "Version": "9.0.7"
     },
-    "CreationDate": "2026-04-14T20:29:19+03:00"
+    "CreationDate": "2026-04-23T14:06:45+03:00"
   },
   "GeneralSpecs": {
     "ProjectId": {
-      "Name": "finalMidiGuitar",
+      "Name": "finalMidiGuitar2",
       "GUID": "66696e61-6c4d-4696-9469-477569746172",
       "Revision": "rev?"
     },
     "Size": {
-      "X": 70.63,
-      "Y": 34.7758
+      "X": 67.39,
+      "Y": 30.25
     },
     "LayerNumber": 2,
     "BoardThickness": 1.6,
@@ -27,14 +27,14 @@
       "PadToPad": 0.4,
       "PadToTrack": 0.4,
       "TrackToTrack": 0.4,
-      "MinLineWidth": 0.25,
+      "MinLineWidth": 0.3,
       "TrackToRegion": 0.5,
       "RegionToRegion": 0.5
     }
   ],
   "FilesAttributes": [
     {
-      "Path": "finalMidiGuitar-F_Cu.gbr",
+      "Path": "finalMidiGuitar2-F_Cu.gbr",
       "FileFunction": "Copper,L1,Top",
       "FilePolarity": "Positive"
     }
