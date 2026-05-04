@@ -36,7 +36,7 @@
 #define OLED_W          128
 #define OLED_H          64
 #define OLED_ADDR       0x3C
-#define NUM_PAGES       4
+#define NUM_PAGES       5
 #define DEBOUNCE_MS     180
 
 // WiFi config mode
@@ -51,6 +51,10 @@
 #define CC_VEL_DEFAULT       21
 #define DIST_MIN_DEFAULT     10
 #define DIST_MAX_DEFAULT     500
+#define DIST_MIN_LO          5
+#define DIST_MIN_HI          500
+#define DIST_MAX_LO          50
+#define DIST_MAX_HI          2000
 #define CURVE_DEFAULT        CURVE_LINEAR
 #define STRIP_BRIGHT_DEFAULT 40
 
@@ -82,12 +86,13 @@ static bool     distInvert  = false;
 #include <BLE2902.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include "web_ui_html.h"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 enum Mode      : uint8_t { MODE_CC, MODE_PB, MODE_COUNT };
 enum Transport : uint8_t { TR_USB, TR_BLE, TR_BOTH, TR_COUNT };
-enum Page      : uint8_t { PG_LIVE, PG_TRANSPORT, PG_MODE, PG_SETTINGS };
+enum Page      : uint8_t { PG_LIVE, PG_TRANSPORT, PG_MODE, PG_SETTINGS, PG_PRESETS };
 
 // ─── BLE MIDI ────────────────────────────────────────────────────────────────
 
@@ -127,6 +132,13 @@ static unsigned long    firstTapTime = 0;
 static int8_t  settingsCursor  = 0;
 static bool    settingsEditing = false;
 static bool    settingsDirty   = false;
+
+// Presets page state — 8 named slots in NVS keys "preset_0".."preset_7".
+// presetsExistMask bit N = slot N has a saved preset (cached to avoid
+// hitting NVS on every redraw).
+#define NUM_PRESETS     8
+static int8_t  presetCursor    = 0;
+static uint8_t presetsExistMask = 0;
 static unsigned long dirtyTime = 0;
 static unsigned long editBtnTime = 0;
 static bool    editBtnPrev     = true;
@@ -285,56 +297,83 @@ static void initBLE() {
 }
 
 // ─── WiFi config mode ───────────────────────────────────────────────────────
+// Page bytes live in web_ui_html.h. web_ui.html is the browser preview
+// — keep them in sync by hand.
 
 static void handleRoot() {
-    char buf[1500];
+    webServer.send_P(200, "text/html", WEB_UI_HTML);
+}
+
+static void handleApiState() {
+    char buf[256];
+    size_t off = 0;
+    off += snprintf(buf + off, sizeof(buf) - off, "{");
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        off += snprintf(buf + off, sizeof(buf) - off, "\"%s\":%ld,",
+                        SETTINGS[i].jsonKey, (long)settingGet(SETTINGS[i]));
+    }
+    off += snprintf(buf + off, sizeof(buf) - off,
+                    "\"tr\":%u,\"md\":%u,\"pe\":%u}",
+                    (uint8_t)transport, (uint8_t)mode, presetsExistMask);
+    webServer.send(200, "application/json", buf);
+}
+
+static void handleApiLive() {
+    char buf[120];
     snprintf(buf, sizeof(buf),
-        "<!DOCTYPE html><html><head><meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<title>MIDI Guitar</title><style>"
-        "body{font-family:sans-serif;background:#111;color:#eee;padding:20px;max-width:400px;margin:auto}"
-        "h1{color:#0fa}label{display:block;margin:14px 0 4px;font-size:13px;opacity:.7;letter-spacing:.1em}"
-        "input,select{width:100%%;padding:10px;font-size:16px;background:#222;color:#eee;"
-        "border:1px solid #444;border-radius:4px;box-sizing:border-box}"
-        "button{margin-top:24px;padding:14px;width:100%%;font-size:18px;background:#0a6;"
-        "color:#fff;border:0;border-radius:4px;cursor:pointer}"
-        ".live{margin-top:30px;padding:16px;background:#1a1a1a;border-radius:6px;font-family:monospace}"
-        "</style></head><body><h1>MIDI Guitar</h1>"
-        "<form action='/save'>"
-        "<label>MIDI CHANNEL</label><input name=ch type=number min=1 max=16 value=%d>"
-        "<label>CC DISTANCE</label><input name=ccd type=number min=0 max=127 value=%d>"
-        "<label>CC VELOCITY</label><input name=ccv type=number min=0 max=127 value=%d>"
-        "<label>DISTANCE MIN (mm)</label><input name=dmin type=number value=%d>"
-        "<label>DISTANCE MAX (mm)</label><input name=dmax type=number value=%d>"
-        "<label>CURVE</label><select name=cv>"
-        "<option value=0 %s>Linear</option><option value=1 %s>Log</option><option value=2 %s>Exp</option>"
-        "</select><button type=submit>SAVE</button></form>"
-        "<div class=live>Live: <span id=d>--</span> mm</div>"
-        "<script>setInterval(async()=>{"
-        "try{document.getElementById('d').textContent=await(await fetch('/live')).text();}catch(e){}"
-        "},200);</script></body></html>",
-        midiCh, ccDist, ccVel, distMinMm, distMaxMm,
-        curve == 0 ? "selected" : "", curve == 1 ? "selected" : "", curve == 2 ? "selected" : "");
-    webServer.send(200, "text/html", buf);
+        "{\"d\":%d,\"v\":%d,\"b\":%d,\"mm\":%d,\"c\":%u,\"bp\":%u}",
+        liveDist, liveVel, liveBend,
+        (int)(ema >= 0 ? ema : 0),
+        bleConnected ? 1u : 0u, bypassed ? 1u : 0u);
+    webServer.send(200, "application/json", buf);
 }
 
-static void handleSave() {
-    if (webServer.hasArg("ch"))   midiCh    = constrain(webServer.arg("ch").toInt(),   1, 16);
-    if (webServer.hasArg("ccd"))  ccDist    = constrain(webServer.arg("ccd").toInt(),  0, 127);
-    if (webServer.hasArg("ccv"))  ccVel     = constrain(webServer.arg("ccv").toInt(),  0, 127);
-    if (webServer.hasArg("dmin")) distMinMm = constrain(webServer.arg("dmin").toInt(), 5, 500);
-    if (webServer.hasArg("dmax")) distMaxMm = constrain(webServer.arg("dmax").toInt(), 50, 2000);
-    if (webServer.hasArg("cv"))   curve     = constrain(webServer.arg("cv").toInt(),   0, 2);
-    settingsDirty = true;
-    dirtyTime = millis();
+static void handleApiSet() {
+    if (!webServer.hasArg("k") || !webServer.hasArg("v")) {
+        webServer.send(400, "text/plain", "missing"); return;
+    }
+    const String &k = webServer.arg("k");
+    long v = webServer.arg("v").toInt();
+    bool changed = false, persists = true;
+
+    if      (k == "tr") changed = setTransport((Transport)constrain((int)v, 0, (int)TR_COUNT - 1));
+    else if (k == "md") changed = setMode((Mode)constrain((int)v, 0, (int)MODE_COUNT - 1));
+    else {
+        const Setting *s = settingByKey(k.c_str());
+        if (!s) { webServer.send(400, "text/plain", "bad key"); return; }
+        changed = settingSet(*s, v);
+    }
+
+    if (changed) {
+        oledDirty = true;
+        if (persists) { settingsDirty = true; dirtyTime = millis(); }
+    }
+    webServer.send(204);
+}
+
+static void handleApiPreset() {
+    if (!webServer.hasArg("slot") || !webServer.hasArg("op")) {
+        webServer.send(400, "text/plain", "missing");
+        return;
+    }
+    int slot = webServer.arg("slot").toInt();
+    const String &op = webServer.arg("op");
+    if (slot < 0 || slot >= NUM_PRESETS) {
+        webServer.send(400, "text/plain", "bad slot");
+        return;
+    }
+    if (op == "load") {
+        if (!loadPresetFrom((uint8_t)slot)) { webServer.send(404, "text/plain", "empty"); return; }
+        showToast("LOADED");
+    } else if (op == "save") {
+        if (!savePresetTo((uint8_t)slot)) { webServer.send(500, "text/plain", "err"); return; }
+        showToast("SAVED");
+    } else {
+        webServer.send(400, "text/plain", "bad op");
+        return;
+    }
     oledDirty = true;
-    webServer.sendHeader("Location", "/");
-    webServer.send(303);
-}
-
-static void handleLive() {
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d", (int)(ema >= 0 ? ema : 0));
-    webServer.send(200, "text/plain", buf);
+    webServer.send(204);
 }
 
 static void webTask(void*) {
@@ -358,9 +397,11 @@ static void enterConfigMode() {
     delay(100);
     IPAddress ip = WiFi.softAPIP();
 
-    webServer.on("/",     handleRoot);
-    webServer.on("/save", handleSave);
-    webServer.on("/live", handleLive);
+    webServer.on("/",           handleRoot);
+    webServer.on("/api/state",  handleApiState);
+    webServer.on("/api/live",   handleApiLive);
+    webServer.on("/api/set",    handleApiSet);
+    webServer.on("/api/preset", handleApiPreset);
     webServer.begin();
 
     xTaskCreatePinnedToCore(webTask, "web", 8192, nullptr, 1, &webTaskH, 0);
@@ -449,7 +490,6 @@ static void showChase() {
     p++;
 }
 
-// New: rainbow pulse during config mode
 static void showConfig() {
     uint16_t hue = (millis() / 4) & 0xFFFF;
     float phase = sinf(millis() * TWO_PI / 1500.0f);
@@ -493,6 +533,34 @@ static void drawPageDots(uint8_t current, uint8_t total) {
 
 static void drawHLine(int16_t y) { oled.drawFastHLine(0, y, OLED_W, SSD1306_WHITE); }
 
+static void drawPageHeader(const char *title) {
+    oled.fillRect(0, 0, OLED_W, 11, SSD1306_WHITE);
+    oled.setTextColor(SSD1306_BLACK);
+    oled.setCursor(4, 2);
+    oled.print(title);
+    oled.setTextColor(SSD1306_WHITE);
+}
+
+// Picks layout (slot width, gap) so `count` slots fit centered in OLED_W.
+static void drawSegmentedPage(const char *title, const char *const *labels,
+                              uint8_t count, uint8_t selIdx, uint8_t pageIdx,
+                              int16_t slotW, int16_t slotH) {
+    drawPageHeader(title);
+    int16_t marginX = (OLED_W - slotW * count - 2 * (count - 1)) / 2;
+    for (uint8_t i = 0; i < count; i++) {
+        int16_t sx = marginX + i * (slotW + 2);
+        bool sel = (i == selIdx);
+        if (sel) oled.fillRoundRect(sx, 14, slotW, slotH, 3, SSD1306_WHITE);
+        else     oled.drawRoundRect(sx, 14, slotW, slotH, 3, SSD1306_WHITE);
+        oled.setTextColor(sel ? SSD1306_BLACK : SSD1306_WHITE);
+        int16_t lw = strlen(labels[i]) * 6;
+        oled.setCursor(sx + (slotW - lw) / 2, 14 + slotH - 10);
+        oled.print(labels[i]);
+    }
+    oled.setTextColor(SSD1306_WHITE);
+    drawPageDots(pageIdx, NUM_PAGES);
+}
+
 static int16_t drawBadge(int16_t x, int16_t y, const char *txt) {
     int16_t w = strlen(txt) * 6 + 4;
     oled.fillRoundRect(x, y, w, 9, 2, SSD1306_WHITE);
@@ -524,14 +592,8 @@ static void drawMuteStripes(int16_t x, int16_t y, int16_t w, int16_t h) {
     }
 }
 
-// New: dedicated OLED page for config mode
 static void drawPageConfig() {
-    oled.fillRect(0, 0, OLED_W, 11, SSD1306_WHITE);
-    oled.setTextColor(SSD1306_BLACK);
-    oled.setCursor(4, 2);
-    oled.print("CONFIG MODE");
-    oled.setTextColor(SSD1306_WHITE);
-
+    drawPageHeader("CONFIG MODE");
     oled.setCursor(0, 16);
     oled.print("WiFi:");
     oled.setCursor(36, 16);
@@ -622,91 +684,205 @@ static void drawPageLive() {
 }
 
 static void drawPageTransport() {
-    oled.fillRect(0, 0, OLED_W, 11, SSD1306_WHITE);
-    oled.setTextColor(SSD1306_BLACK);
-    oled.setCursor(4, 2);
-    oled.print("OUTPUT");
-    oled.setTextColor(SSD1306_WHITE);
-
-    const char *labels[] = { "USB", "BLE", "BOTH" };
-    int16_t slotW = 40, margin = (OLED_W - slotW * 3 - 4) / 2, slotY = 14, slotH = 40;
-
-    for (uint8_t i = 0; i < TR_COUNT; i++) {
-        int16_t sx = margin + i * (slotW + 2);
-        bool sel = ((uint8_t)transport == i);
-        if (sel) { oled.fillRoundRect(sx, slotY, slotW, slotH, 3, SSD1306_WHITE); oled.setTextColor(SSD1306_BLACK); }
-        else     { oled.drawRoundRect(sx, slotY, slotW, slotH, 3, SSD1306_WHITE); oled.setTextColor(SSD1306_WHITE); }
-
-        int16_t lw = strlen(labels[i]) * 6;
-        oled.setCursor(sx + (slotW - lw) / 2, slotY + slotH - 10);
-        oled.print(labels[i]);
-        oled.setTextColor(SSD1306_WHITE);
-    }
-    drawPageDots(1, NUM_PAGES);
+    static const char *L[] = { "USB", "BLE", "BOTH" };
+    drawSegmentedPage("OUTPUT", L, TR_COUNT, (uint8_t)transport, 1, 40, 40);
 }
 
 static void drawPageMode() {
-    oled.fillRect(0, 0, OLED_W, 11, SSD1306_WHITE);
-    oled.setTextColor(SSD1306_BLACK);
-    oled.setCursor(4, 2);
-    oled.print("MODE");
-    oled.setTextColor(SSD1306_WHITE);
-
-    const char *labels[] = { "CC", "BEND" };
-    int16_t slotW = 58, gap = OLED_W - slotW * 2, slotY = 14, slotH = 40;
-
-    for (uint8_t i = 0; i < MODE_COUNT; i++) {
-        int16_t sx = gap / 2 + i * (slotW + 2);
-        bool sel = ((uint8_t)mode == i);
-        if (sel) { oled.fillRoundRect(sx, slotY, slotW, slotH, 3, SSD1306_WHITE); oled.setTextColor(SSD1306_BLACK); }
-        else     { oled.drawRoundRect(sx, slotY, slotW, slotH, 3, SSD1306_WHITE); oled.setTextColor(SSD1306_WHITE); }
-
-        int16_t lw = strlen(labels[i]) * 6;
-        oled.setCursor(sx + (slotW - lw) / 2, slotY + slotH - 10);
-        oled.print(labels[i]);
-        oled.setTextColor(SSD1306_WHITE);
-    }
-    drawPageDots(2, NUM_PAGES);
+    static const char *L[] = { "CC", "BEND" };
+    drawSegmentedPage("MODE", L, MODE_COUNT, (uint8_t)mode, 2, 58, 40);
 }
 
-static void getSettingInfo(uint8_t idx, char *label, char *val, size_t vLen) {
-    switch (idx) {
-        case 0: strcpy(label, "MIDI Ch");  snprintf(val, vLen, "%d", midiCh);    break;
-        case 1: strcpy(label, "CC Dist");  snprintf(val, vLen, "%d", ccDist);    break;
-        case 2: strcpy(label, "CC Vel");   snprintf(val, vLen, "%d", ccVel);     break;
-        case 3: strcpy(label, "Dist Min"); snprintf(val, vLen, "%d", distMinMm); break;
-        case 4: strcpy(label, "Dist Max"); snprintf(val, vLen, "%d", distMaxMm); break;
-        case 5: strcpy(label, "Curve");
-            snprintf(val, vLen, "%s", curve == CURVE_LOG ? "LOG" : curve == CURVE_EXP ? "EXP" : "LIN");
-            break;
-        case 6: strcpy(label, "LED Brt");  snprintf(val, vLen, "%d", stripBright); break;
-        case 7: strcpy(label, "Invert");   snprintf(val, vLen, "%s", distInvert ? "ON" : "OFF"); break;
+// ─── Settings table ─────────────────────────────────────────────────────────
+//
+// Single source of truth for every persisted setting. Order is locked —
+// preset serialization, NVS keys, and the OLED settings page index all
+// depend on it. Append; do not reorder, do not insert in the middle, or
+// existing presets become garbled.
+
+enum SType : uint8_t { T_U8, T_I16, T_BOOL, T_CURVE };
+
+struct Setting {
+    const char *jsonKey;     // web ?k=
+    const char *label;       // OLED row label
+    const char *nvsKey;      // NVS key under "midi_guitar"
+    SType       type;
+    void       *slot;        // address of the runtime variable
+    int16_t     lo, hi;      // bounds for U8 / I16 / CURVE
+    int8_t      step;        // encoder delta multiplier (I16/U8)
+    void      (*onChange)(); // optional, fired iff value actually changed
+};
+
+static void onBrightChange() { ring.setBrightness(stripBright); }
+
+static const Setting SETTINGS[] = {
+    { "ch",   "MIDI Ch",  "midiCh",  T_U8,    &midiCh,      1, 16,                   1, nullptr },
+    { "ccd",  "CC Dist",  "ccDist",  T_U8,    &ccDist,      0, 127,                  1, nullptr },
+    { "ccv",  "CC Vel",   "ccVel",   T_U8,    &ccVel,       0, 127,                  1, nullptr },
+    { "dmin", "Dist Min", "distMin", T_I16,   &distMinMm,   DIST_MIN_LO, DIST_MIN_HI, 5, nullptr },
+    { "dmax", "Dist Max", "distMax", T_I16,   &distMaxMm,   DIST_MAX_LO, DIST_MAX_HI,10, nullptr },
+    { "cv",   "Curve",    "curve",   T_CURVE, &curve,       0, 2,                    1, nullptr },
+    { "brt",  "LED Brt",  "bright",  T_U8,    &stripBright, 5, 255,                  5, onBrightChange },
+    { "inv",  "Invert",   "invert",  T_BOOL,  &distInvert,  0, 1,                    1, nullptr },
+};
+static_assert(sizeof(SETTINGS)/sizeof(SETTINGS[0]) == NUM_SETTINGS,
+              "NUM_SETTINGS must equal the SETTINGS table length");
+
+static int32_t settingGet(const Setting &s) {
+    switch (s.type) {
+        case T_U8: case T_CURVE: return *(uint8_t*)s.slot;
+        case T_I16:              return *(int16_t*)s.slot;
+        case T_BOOL:             return *(bool*)s.slot ? 1 : 0;
     }
+    return 0;
+}
+
+static bool settingSet(const Setting &s, int32_t v) {
+    bool changed = false;
+    switch (s.type) {
+        case T_U8: case T_CURVE: {
+            uint8_t n = (uint8_t)constrain((int)v, s.lo, s.hi);
+            if (n != *(uint8_t*)s.slot) { *(uint8_t*)s.slot = n; changed = true; }
+            break;
+        }
+        case T_I16: {
+            int16_t n = (int16_t)constrain((int)v, s.lo, s.hi);
+            if (n != *(int16_t*)s.slot) { *(int16_t*)s.slot = n; changed = true; }
+            break;
+        }
+        case T_BOOL: {
+            bool n = (v != 0);
+            if (n != *(bool*)s.slot) { *(bool*)s.slot = n; changed = true; }
+            break;
+        }
+    }
+    if (changed && s.onChange) s.onChange();
+    return changed;
+}
+
+static bool settingAdjust(const Setting &s, int8_t dir) {
+    if (s.type == T_BOOL)  return settingSet(s, !*(bool*)s.slot);
+    if (s.type == T_CURVE) return settingSet(s, wrap(*(uint8_t*)s.slot + dir, 3));
+    return settingSet(s, settingGet(s) + dir * s.step);
+}
+
+static void settingFormat(const Setting &s, char *out, size_t n) {
+    if (s.type == T_BOOL) {
+        snprintf(out, n, "%s", *(bool*)s.slot ? "ON" : "OFF");
+    } else if (s.type == T_CURVE) {
+        const char *c[] = { "LIN", "LOG", "EXP" };
+        uint8_t v = *(uint8_t*)s.slot;
+        snprintf(out, n, "%s", v < 3 ? c[v] : "?");
+    } else {
+        snprintf(out, n, "%d", (int)settingGet(s));
+    }
+}
+
+static const Setting *settingByKey(const char *k) {
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        if (strcmp(SETTINGS[i].jsonKey, k) == 0) return &SETTINGS[i];
+    }
+    return nullptr;
+}
+
+// I16 = 2 bytes little-endian; everything else = 1 byte. 16 bytes max.
+static size_t settingsToBytes(uint8_t *buf, size_t cap) {
+    size_t off = 0;
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        const Setting &s = SETTINGS[i];
+        size_t need = (s.type == T_I16) ? 2 : 1;
+        if (off + need > cap) return 0;
+        int32_t v = settingGet(s);
+        buf[off++] = (uint8_t)(v & 0xFF);
+        if (s.type == T_I16) buf[off++] = (uint8_t)((v >> 8) & 0xFF);
+    }
+    return off;
+}
+
+static size_t settingsFromBytes(const uint8_t *buf, size_t len) {
+    size_t off = 0;
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        const Setting &s = SETTINGS[i];
+        size_t need = (s.type == T_I16) ? 2 : 1;
+        if (off + need > len) break;
+        int32_t v = buf[off++];
+        if (s.type == T_I16) v = (int16_t)((uint16_t)v | ((uint16_t)buf[off++] << 8));
+        settingSet(s, v);
+    }
+    return off;
+}
+
+// ─── Settings page (table-driven) ──────────────────────────────────────────
+
+static void getSettingInfo(uint8_t idx, char *label, char *val, size_t vLen) {
+    if (idx >= NUM_SETTINGS) return;
+    strcpy(label, SETTINGS[idx].label);
+    settingFormat(SETTINGS[idx], val, vLen);
 }
 
 static void adjustSetting(uint8_t idx, int8_t dir) {
-    switch (idx) {
-        case 0: midiCh    = constrain(midiCh + dir, 1, 16); break;
-        case 1: ccDist    = constrain(ccDist + dir, 0, 127); break;
-        case 2: ccVel     = constrain(ccVel + dir, 0, 127); break;
-        case 3: distMinMm = constrain(distMinMm + dir * 5, 5, 200); break;
-        case 4: distMaxMm = constrain(distMaxMm + dir * 10, 100, 1000); break;
-        case 5: curve     = wrap(curve + dir, 3); break;
-        case 6: stripBright = constrain((int16_t)stripBright + dir * 5, 5, 255);
-                ring.setBrightness(stripBright); break;
-        case 7: distInvert = !distInvert; break;
-    }
+    if (idx >= NUM_SETTINGS) return;
+    settingAdjust(SETTINGS[idx], dir);
     settingsDirty = true;
     dirtyTime = millis();
 }
 
+// ─── Presets ───────────────────────────────────────────────────────────────
+
+static void presetKey(char *out, size_t n, uint8_t slot) {
+    snprintf(out, n, "preset_%u", slot);
+}
+
+static void refreshPresetsExist() {
+    presetsExistMask = 0;
+    prefs.begin("midi_guitar", true);
+    for (uint8_t i = 0; i < NUM_PRESETS; i++) {
+        char k[12]; presetKey(k, sizeof(k), i);
+        if (prefs.isKey(k)) presetsExistMask |= (1u << i);
+    }
+    prefs.end();
+}
+
+// Preset format: settingsToBytes payload + 1 trailing byte for mode.
+// Older presets without the mode byte still load (mode left unchanged).
+static bool savePresetTo(uint8_t slot) {
+    if (slot >= NUM_PRESETS) return false;
+    uint8_t buf[32];
+    size_t n = settingsToBytes(buf, sizeof(buf));
+    if (n == 0 || n + 1 > sizeof(buf)) return false;
+    buf[n++] = (uint8_t)mode;
+    char k[12]; presetKey(k, sizeof(k), slot);
+    prefs.begin("midi_guitar", false);
+    size_t wrote = prefs.putBytes(k, buf, n);
+    prefs.end();
+    if (wrote == n) presetsExistMask |= (1u << slot);
+    return wrote == n;
+}
+
+static bool loadPresetFrom(uint8_t slot) {
+    if (slot >= NUM_PRESETS) return false;
+    if (!((presetsExistMask >> slot) & 1)) return false;
+    char k[12]; presetKey(k, sizeof(k), slot);
+    uint8_t buf[32];
+    prefs.begin("midi_guitar", true);
+    size_t got = prefs.getBytes(k, buf, sizeof(buf));
+    prefs.end();
+    if (got == 0) return false;
+    size_t off = settingsFromBytes(buf, got);
+    if (off < got) setMode((Mode)constrain((int)buf[off], 0, (int)MODE_COUNT - 1));
+    prevDist = -1; prevBend = -1; prevVel = -1;
+    settingsDirty = true;
+    dirtyTime = millis();
+    return true;
+}
+
 static void drawPageSettings() {
-    oled.fillRect(0, 0, OLED_W, 11, SSD1306_WHITE);
-    oled.setTextColor(SSD1306_BLACK);
-    oled.setCursor(4, 2);
-    oled.print("SETTINGS");
-    if (settingsEditing) { oled.setCursor(OLED_W - 24, 2); oled.print("EDIT"); }
-    oled.setTextColor(SSD1306_WHITE);
+    drawPageHeader("SETTINGS");
+    if (settingsEditing) {
+        oled.setTextColor(SSD1306_BLACK);
+        oled.setCursor(OLED_W - 24, 2); oled.print("EDIT");
+        oled.setTextColor(SSD1306_WHITE);
+    }
 
     int16_t rowH = 10, startY = 13;
     int8_t scrollTop = max(0, settingsCursor - 2);
@@ -744,34 +920,78 @@ static void drawPageSettings() {
     drawPageDots(3, NUM_PAGES);
 }
 
+static void drawPagePresets() {
+    drawPageHeader("PRESETS");
+    int16_t cellW = 28, cellH = 18, gap = 2;
+    int16_t startX = (OLED_W - (cellW * 4 + gap * 3)) / 2;
+
+    for (uint8_t i = 0; i < NUM_PRESETS; i++) {
+        int16_t row = i / 4, col = i % 4;
+        int16_t x   = startX + col * (cellW + gap);
+        int16_t y   = 14 + row * (cellH + 2);
+        bool sel    = (i == (uint8_t)presetCursor);
+        bool exists = (presetsExistMask >> i) & 1;
+
+        if (sel) {
+            oled.fillRoundRect(x, y, cellW, cellH, 2, SSD1306_WHITE);
+            oled.setTextColor(SSD1306_BLACK);
+        } else if (exists) {
+            oled.drawRoundRect(x, y, cellW, cellH, 2, SSD1306_WHITE);
+            oled.setTextColor(SSD1306_WHITE);
+        } else {
+            for (int16_t dx = 0; dx < cellW; dx += 3) {
+                oled.drawPixel(x + dx, y, SSD1306_WHITE);
+                oled.drawPixel(x + dx, y + cellH - 1, SSD1306_WHITE);
+            }
+            for (int16_t dy = 0; dy < cellH; dy += 3) {
+                oled.drawPixel(x, y + dy, SSD1306_WHITE);
+                oled.drawPixel(x + cellW - 1, y + dy, SSD1306_WHITE);
+            }
+            oled.setTextColor(SSD1306_WHITE);
+        }
+        char lbl[4]; snprintf(lbl, sizeof(lbl), "P%u", i + 1);
+        int16_t lw = strlen(lbl) * 6;
+        oled.setCursor(x + (cellW - lw) / 2, y + (cellH - 7) / 2);
+        oled.print(lbl);
+        oled.setTextColor(SSD1306_WHITE);
+    }
+
+    oled.setCursor(0, 54);
+    oled.print("TAP load HOLD save");
+    drawPageDots(4, NUM_PAGES);
+}
+
 // ─── NVS ─────────────────────────────────────────────────────────────────────
 
 static void loadSettings() {
     prefs.begin("midi_guitar", true);
-    midiCh      = prefs.getUChar("midiCh",   MIDI_CH_DEFAULT);
-    ccDist      = prefs.getUChar("ccDist",   CC_DIST_DEFAULT);
-    ccVel       = prefs.getUChar("ccVel",    CC_VEL_DEFAULT);
-    distMinMm   = prefs.getShort("distMin",  DIST_MIN_DEFAULT);
-    distMaxMm   = prefs.getShort("distMax",  DIST_MAX_DEFAULT);
-    curve       = prefs.getUChar("curve",    CURVE_DEFAULT);
-    stripBright = prefs.getUChar("bright",   STRIP_BRIGHT_DEFAULT);
-    distInvert  = prefs.getBool("invert",    false);
-    uint8_t tr  = prefs.getUChar("transport", TR_USB);
-    transport   = (tr < TR_COUNT) ? (Transport)tr : TR_USB;
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        const Setting &s = SETTINGS[i];
+        switch (s.type) {
+            case T_U8: case T_CURVE: *(uint8_t*)s.slot = prefs.getUChar(s.nvsKey, *(uint8_t*)s.slot); break;
+            case T_I16:              *(int16_t*)s.slot = prefs.getShort(s.nvsKey, *(int16_t*)s.slot); break;
+            case T_BOOL:             *(bool*)s.slot    = prefs.getBool (s.nvsKey, *(bool*)s.slot); break;
+        }
+    }
+    uint8_t tr = prefs.getUChar("transport", TR_USB);
+    transport  = (tr < TR_COUNT) ? (Transport)tr : TR_USB;
+    uint8_t md = prefs.getUChar("mode", MODE_CC);
+    mode       = (md < MODE_COUNT) ? (Mode)md : MODE_CC;
     prefs.end();
 }
 
 static void saveSettings() {
     prefs.begin("midi_guitar", false);
-    prefs.putUChar("midiCh",    midiCh);
-    prefs.putUChar("ccDist",    ccDist);
-    prefs.putUChar("ccVel",     ccVel);
-    prefs.putShort("distMin",   distMinMm);
-    prefs.putShort("distMax",   distMaxMm);
-    prefs.putUChar("curve",     curve);
-    prefs.putUChar("bright",    stripBright);
-    prefs.putBool("invert",     distInvert);
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        const Setting &s = SETTINGS[i];
+        switch (s.type) {
+            case T_U8: case T_CURVE: prefs.putUChar(s.nvsKey, *(uint8_t*)s.slot); break;
+            case T_I16:              prefs.putShort(s.nvsKey, *(int16_t*)s.slot); break;
+            case T_BOOL:             prefs.putBool (s.nvsKey, *(bool*)s.slot); break;
+        }
+    }
     prefs.putUChar("transport", transport);
+    prefs.putUChar("mode",      mode);
     prefs.end();
     settingsDirty = false;
 }
@@ -788,6 +1008,7 @@ static void refreshOLED() {
             case PG_TRANSPORT: drawPageTransport(); break;
             case PG_MODE:      drawPageMode();      break;
             case PG_SETTINGS:  drawPageSettings();  break;
+            case PG_PRESETS:   drawPagePresets();   break;
         }
     }
     if (toastText && millis() < toastUntil) {
@@ -854,10 +1075,27 @@ static void playIntro() {
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
-static void cycleTransport(int8_t dir) {
-    transport = (Transport)wrap((int8_t)transport + dir, TR_COUNT);
+// Setters return true iff state actually changed. Shared between the
+// encoder cycle path and the web `/api/set` handler so BLE-init, ring
+// wipe, and live-value resets stay in one place.
+static bool setTransport(Transport newT) {
+    if (newT == transport) return false;
+    transport = newT;
     if (wantsBLE() && !bleInitDone) initBLE();
     triggerWipe();
+    return true;
+}
+
+static bool setMode(Mode newM) {
+    if (newM == mode) return false;
+    mode = newM;
+    prevDist = -1; prevBend = -1; liveDist = 0;
+    triggerWipe();
+    return true;
+}
+
+static void cycleTransport(int8_t dir) {
+    setTransport((Transport)wrap((int8_t)transport + dir, TR_COUNT));
     settingsDirty = true;
     dirtyTime = millis();
     const char *labels[] = { "USB", "BLE", "BOTH" };
@@ -865,9 +1103,8 @@ static void cycleTransport(int8_t dir) {
 }
 
 static void cycleMode(int8_t dir) {
-    mode = (Mode)wrap((int8_t)mode + dir, MODE_COUNT);
-    prevDist = -1; prevBend = -1; liveDist = 0;
-    triggerWipe();
+    setMode((Mode)wrap((int8_t)mode + dir, MODE_COUNT));
+    settingsDirty = true; dirtyTime = millis();
     showToast(mode == MODE_CC ? "CC" : "BEND");
 }
 
@@ -913,38 +1150,73 @@ static void handleEncoder() {
     }
     if (delta != 0) {
         switch (currentPage) {
-            case PG_LIVE:
-                stripBright = constrain((int16_t)stripBright + delta * 5, 5, 255);
-                ring.setBrightness(stripBright);
+            case PG_LIVE: {
+                const Setting *s = settingByKey("brt");
+                if (s && settingAdjust(*s, delta > 0 ? 1 : -1)) {
+                    settingsDirty = true; dirtyTime = millis();
+                }
                 break;
+            }
             case PG_TRANSPORT: cycleTransport(delta > 0 ? 1 : -1); break;
             case PG_MODE:      cycleMode(delta > 0 ? 1 : -1);      break;
             case PG_SETTINGS:
                 if (settingsEditing) adjustSetting(settingsCursor, delta > 0 ? 1 : -1);
                 else settingsCursor = constrain(settingsCursor + (delta > 0 ? 1 : -1), 0, NUM_SETTINGS - 1);
                 break;
+            case PG_PRESETS:
+                presetCursor = constrain(presetCursor + (delta > 0 ? 1 : -1), 0, NUM_PRESETS - 1);
+                break;
             default: break;
         }
     }
 }
 
+// Short tap fires the page's primary action on the press edge for snappy
+// response. PG_PRESETS defers: tap-release loads the highlighted slot,
+// hold ≥1 s saves it. Note: triple-tapping on PG_PRESETS will fire one
+// or two preset-load actions before entering config mode — harmless
+// (load is idempotent) and not worth deferring the load to fix.
 static void readEditBtn() {
+    static unsigned long pressStart = 0;
+    static bool          pressActive = false;
+    static bool          longFired   = false;
+
     bool btnNow = digitalRead(BTN_EDIT) == LOW;
+
     if (btnNow && !editBtnPrev && millis() - editBtnTime > DEBOUNCE_MS) {
         editBtnTime = millis();
-        // Triple-tap detection runs first; if it fires, single-press action is ignored
-        if (tapCount > 0 && tapCount < CFG_TAP_COUNT) {
-            // mid-sequence — don't trigger single action
-        } else if (!configMode) {
+        pressStart  = millis();
+        pressActive = true;
+        longFired   = false;
+
+        bool midSequence = (tapCount > 0 && tapCount < CFG_TAP_COUNT);
+        if (!midSequence && !configMode && currentPage != PG_PRESETS) {
             switch (currentPage) {
-                case PG_LIVE:      toggleBypass();       break;
-                case PG_TRANSPORT: cycleTransport(1);    break;
-                case PG_MODE:      cycleMode(1);         break;
+                case PG_LIVE:      toggleBypass();                     break;
+                case PG_TRANSPORT: cycleTransport(1);                  break;
+                case PG_MODE:      cycleMode(1);                       break;
                 case PG_SETTINGS:  settingsEditing = !settingsEditing; break;
+                default: break;
             }
             oledDirty = true;
         }
     }
+
+    if (pressActive && !longFired && currentPage == PG_PRESETS && !configMode
+        && millis() - pressStart >= 1000) {
+        longFired = true;
+        showToast(savePresetTo((uint8_t)presetCursor) ? "SAVED" : "ERR");
+        oledDirty = true;
+    }
+
+    if (!btnNow && editBtnPrev) {
+        if (pressActive && !longFired && currentPage == PG_PRESETS && !configMode) {
+            showToast(loadPresetFrom((uint8_t)presetCursor) ? "LOADED" : "EMPTY");
+            oledDirty = true;
+        }
+        pressActive = false;
+    }
+
     editBtnPrev = btnNow;
     if (currentPage != PG_SETTINGS && settingsEditing) settingsEditing = false;
 }
@@ -988,6 +1260,7 @@ void setup() {
     delay(2000);
 
     loadSettings();
+    refreshPresetsExist();
 
     pinMode(BTN_EDIT, INPUT_PULLUP);
     pinMode(ENC_A, INPUT_PULLUP);

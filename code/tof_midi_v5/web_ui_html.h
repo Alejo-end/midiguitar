@@ -1,0 +1,144 @@
+// Auto-generated from web_ui.html by tools/build_web_ui.sh.
+// PROGMEM keeps the page in flash so heap stays free for WiFi+BLE.
+// Do not edit by hand — re-run the script after changing web_ui.html.
+
+#pragma once
+
+static const char WEB_UI_HTML[] PROGMEM = R"WEBUI(<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>MidiGuitar</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0 auto;padding:12px;max-width:480px;font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#1a1a1a;color:#d4d4d4;user-select:none}
+header{display:flex;align-items:center;gap:8px;padding:8px 4px 14px}
+header h1{margin:0;font:700 14px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.18em;color:#5fd7c5}
+.ip{margin-left:auto;font:11px ui-monospace,Menlo,monospace;color:#666}
+.dot{width:8px;height:8px;border-radius:50%;background:#444;flex:none}
+.dot.on{background:#5fd7c5;box-shadow:0 0 6px #5fd7c5}
+.card{background:#232323;border:1px solid #3a3a3a;margin-bottom:10px;border-radius:3px;overflow:hidden}
+.card>.hd{background:#2d2d2d;padding:7px 10px;font:11px/1 ui-monospace,Menlo,monospace;letter-spacing:.18em;color:#888;border-bottom:1px solid #3a3a3a;display:flex;justify-content:space-between;align-items:center}
+.card>.hd .badge{font-size:9px;padding:2px 6px;background:#5fd7c5;color:#0a0a0a;border-radius:2px;letter-spacing:.1em;font-weight:700}
+.card>.hd .badge.mute{background:#ffb742}
+.card>.body{padding:10px}
+.bar{position:relative;height:22px;background:#0e0e0e;border:1px solid #3a3a3a;border-radius:2px;overflow:hidden;margin-bottom:6px}
+.bar>.fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#5fd7c5,#ffb742);width:0;transition:width 60ms linear}
+.bar>.ticks{position:absolute;inset:0;background-image:repeating-linear-gradient(90deg,transparent,transparent 24px,#2a2a2a 24px,#2a2a2a 25px);pointer-events:none}
+.bar>.lbl{position:absolute;left:6px;top:4px;font:10px ui-monospace,Menlo,monospace;color:#5fd7c5;letter-spacing:.1em;mix-blend-mode:difference;pointer-events:none}
+.bar>.val{position:absolute;right:6px;top:4px;font:10px ui-monospace,Menlo,monospace;color:#ffb742;mix-blend-mode:difference;pointer-events:none}
+.row{display:flex;align-items:center;justify-content:space-between;padding:7px 0;gap:10px}
+.row+.row{border-top:1px dashed #2d2d2d}
+.row>label{font:11px/1 ui-monospace,Menlo,monospace;letter-spacing:.16em;color:#999;text-transform:uppercase}
+.nbox{display:inline-block;background:#0e0e0e;color:#ffb742;font:14px ui-monospace,Menlo,monospace;padding:6px 10px;border:1px solid #3a3a3a;border-radius:2px;min-width:60px;text-align:right}
+.seg{display:flex;gap:4px}
+.seg button{flex:1;min-height:44px;background:#1a1a1a;color:#999;border:1px solid #3a3a3a;border-radius:2px;font:700 12px/1 ui-monospace,Menlo,monospace;letter-spacing:.18em;cursor:pointer}
+.seg button.on{background:#5fd7c5;color:#0a0a0a;border-color:#5fd7c5}
+input[type=number],select{background:#0e0e0e;color:#ffb742;font:14px ui-monospace,Menlo,monospace;padding:6px 8px;border:1px solid #3a3a3a;border-radius:2px;width:80px;text-align:right;-moz-appearance:textfield}
+input[type=number]::-webkit-outer-spin-button,input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;appearance:none;margin:0}
+select{text-align:left;width:110px;-webkit-appearance:none;appearance:none;padding-right:22px;background-image:linear-gradient(45deg,transparent 50%,#ffb742 50%),linear-gradient(135deg,#ffb742 50%,transparent 50%);background-position:calc(100% - 14px) 13px,calc(100% - 9px) 13px;background-size:5px 5px;background-repeat:no-repeat}
+input:focus,select:focus{outline:1px solid #5fd7c5;outline-offset:-1px}
+input[type=range]{-webkit-appearance:none;background:#0e0e0e;height:44px;width:160px;border:1px solid #3a3a3a;border-radius:2px;padding:0}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:42px;background:#5fd7c5;cursor:pointer;border:0;border-radius:1px}
+input[type=range]::-moz-range-thumb{width:14px;height:42px;background:#5fd7c5;cursor:pointer;border:0;border-radius:1px}
+.tgl{width:56px;height:44px;background:#0e0e0e;border:1px solid #3a3a3a;border-radius:2px;position:relative;cursor:pointer;flex:none}
+.tgl .knob{position:absolute;top:10px;left:2px;width:22px;height:22px;background:#444;border-radius:1px;transition:left 80ms,background 80ms}
+.tgl.on .knob{left:30px;background:#5fd7c5}
+.psg{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:8px}
+.ps{min-height:44px;background:#1a1a1a;color:#666;border:1px solid #3a3a3a;border-radius:2px;font:700 12px ui-monospace,Menlo,monospace;letter-spacing:.1em;cursor:pointer}
+.ps.has{color:#d4d4d4;border-color:#555}
+.ps.on{background:#5fd7c5;color:#0a0a0a;border-color:#5fd7c5}
+.psa{display:flex;gap:6px}
+.psbtn{flex:1;min-height:44px;background:#1a1a1a;color:#5fd7c5;border:1px solid #5fd7c5;border-radius:2px;font:700 12px ui-monospace,Menlo,monospace;letter-spacing:.18em;cursor:pointer}
+.psbtn:active{background:#5fd7c5;color:#0a0a0a}
+.psbtn.save{color:#ffb742;border-color:#ffb742}
+.psbtn.save:active{background:#ffb742;color:#0a0a0a}
+footer{text-align:center;font:10px ui-monospace,Menlo,monospace;color:#444;padding:14px 0;letter-spacing:.18em}
+</style></head><body>
+<header><span class="dot" id="dot"></span><h1>MIDI&nbsp;GUITAR</h1><span class="ip" id="ip"></span></header>
+
+<div class="card"><div class="hd">LIVE<span class="badge" id="bOut">USB</span></div><div class="body">
+<div class="bar"><div class="lbl">DST</div><div class="fill" id="fD"></div><div class="ticks"></div><div class="val" id="vD">0</div></div>
+<div class="bar"><div class="lbl">VEL</div><div class="fill" id="fV"></div><div class="ticks"></div><div class="val" id="vV">0</div></div>
+<div class="row"><label>Raw</label><span class="nbox" id="vM">-- mm</span></div>
+<div class="row"><label>Bend</label><span class="nbox" id="vB">--</span></div>
+</div></div>
+
+<div class="card"><div class="hd">PRESETS</div><div class="body">
+<div class="psg" id="psg">
+<button class="ps" data-i="0">P1</button><button class="ps" data-i="1">P2</button><button class="ps" data-i="2">P3</button><button class="ps" data-i="3">P4</button>
+<button class="ps" data-i="4">P5</button><button class="ps" data-i="5">P6</button><button class="ps" data-i="6">P7</button><button class="ps" data-i="7">P8</button>
+</div>
+<div class="psa"><button class="psbtn" id="pLoad">LOAD</button><button class="psbtn save" id="pSave">SAVE</button></div>
+</div></div>
+
+<div class="card"><div class="hd">OUTPUT</div><div class="body"><div class="seg" id="sTr">
+<button data-v="0">USB</button><button data-v="1">BLE</button><button data-v="2">BOTH</button>
+</div></div></div>
+
+<div class="card"><div class="hd">MODE</div><div class="body"><div class="seg" id="sMd">
+<button data-v="0">CC</button><button data-v="1">BEND</button>
+</div></div></div>
+
+<div class="card"><div class="hd">MIDI</div><div class="body">
+<div class="row"><label>Channel</label><input type="number" id="ch" min="1" max="16"></div>
+<div class="row"><label>CC&nbsp;Distance</label><input type="number" id="ccd" min="0" max="127"></div>
+<div class="row"><label>CC&nbsp;Velocity</label><input type="number" id="ccv" min="0" max="127"></div>
+</div></div>
+
+<div class="card"><div class="hd">SENSOR</div><div class="body">
+<div class="row"><label>Dist&nbsp;Min&nbsp;(mm)</label><input type="number" id="dmin" min="5" max="500" step="5"></div>
+<div class="row"><label>Dist&nbsp;Max&nbsp;(mm)</label><input type="number" id="dmax" min="50" max="2000" step="10"></div>
+<div class="row"><label>Curve</label><select id="cv"><option value="0">Linear</option><option value="1">Log</option><option value="2">Exp</option></select></div>
+<div class="row"><label>Invert</label><div class="tgl" id="inv"><div class="knob"></div></div></div>
+</div></div>
+
+<div class="card"><div class="hd">LED</div><div class="body">
+<div class="row"><label>Brightness</label><input type="range" id="brt" min="5" max="255" step="5"></div>
+</div></div>
+
+<footer>TOF&nbsp;MIDI&nbsp;V5&nbsp;·&nbsp;PREVIEW</footer>
+
+
+<script>
+const $=(i)=>document.getElementById(i);
+const TR=['USB','BLE','BOTH'];
+let st={tr:0};
+const post=(k,v)=>fetch('/api/set?k='+k+'&v='+encodeURIComponent(v));
+function setSeg(id,v){[...$(id).children].forEach(b=>b.classList.toggle('on',+b.dataset.v===+v));}
+function bSeg(id,k){[...$(id).children].forEach(b=>b.onclick=()=>{setSeg(id,b.dataset.v);st[k]=+b.dataset.v;post(k,b.dataset.v);});}
+function bNum(id,k){$(id).onchange=(e)=>post(k,e.target.value);}
+function bRng(id,k){let t;$(id).oninput=(e)=>{clearTimeout(t);t=setTimeout(()=>post(k,e.target.value),60);};}
+function bTgl(id,k){$(id).onclick=()=>{$(id).classList.toggle('on');post(k,$(id).classList.contains('on')?1:0);};}
+let curPreset=0;
+function paintPresets(){
+ const m=st.pe||0;
+ document.querySelectorAll('.ps').forEach(b=>{const i=+b.dataset.i;
+  b.classList.toggle('has',!!((m>>i)&1));b.classList.toggle('on',i===curPreset);});
+}
+async function load(){
+ try{const r=await fetch('/api/state');st=await r.json();
+ $('ch').value=st.ch;$('ccd').value=st.ccd;$('ccv').value=st.ccv;
+ $('dmin').value=st.dmin;$('dmax').value=st.dmax;$('cv').value=st.cv;
+ $('brt').value=st.brt;$('inv').classList.toggle('on',!!st.inv);
+ setSeg('sTr',st.tr);setSeg('sMd',st.md);$('ip').textContent=location.host||'192.168.4.1';
+ paintPresets();}catch(e){}
+}
+async function tick(){
+ try{const r=await fetch('/api/live');const j=await r.json();
+ $('fD').style.width=(j.d*100/127)+'%';$('fV').style.width=(j.v*100/127)+'%';
+ $('vD').textContent=j.d;$('vV').textContent=j.v;
+ $('vM').textContent=j.mm+' mm';$('vB').textContent=j.b;
+ $('dot').classList.toggle('on',!!j.c);
+ const o=$('bOut');o.textContent=j.bp?'MUTE':TR[st.tr]||'USB';
+ o.classList.toggle('mute',!!j.bp);}catch(e){}
+}
+bSeg('sTr','tr');bSeg('sMd','md');
+bNum('ch','ch');bNum('ccd','ccd');bNum('ccv','ccv');
+bNum('dmin','dmin');bNum('dmax','dmax');bNum('cv','cv');
+bRng('brt','brt');bTgl('inv','inv');
+document.querySelectorAll('.ps').forEach(b=>b.onclick=()=>{curPreset=+b.dataset.i;paintPresets();});
+$('pLoad').onclick=async()=>{await fetch('/api/preset?slot='+curPreset+'&op=load');load();};
+$('pSave').onclick=async()=>{await fetch('/api/preset?slot='+curPreset+'&op=save');load();};
+load().then(()=>setInterval(tick,200));
+</script></body></html>
+)WEBUI";
