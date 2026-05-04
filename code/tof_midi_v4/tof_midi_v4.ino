@@ -11,15 +11,17 @@
 
 #define DEBUG           1
 
-#define I2C_SDA         5
-#define I2C_SCL         6
+// Pin map matches finalMidiGuitar schematic (XIAO ESP32S3 socket M1).
+// Arduino-D-pin to ESP32 GPIO: D0=1, D1=2, D2=3, D4=5, D5=6, D6=43, D7=44, D8=7, D10=9.
+#define I2C_SDA         43      // D6  — SDA to VL53L1X / OLED breakout (J2)
+#define I2C_SCL         6       // D5  — SCL to VL53L1X / OLED breakout (J2)
 #define I2C_FREQ        400000
 
 // Hardware pins & constants (true compile-time)
 #define BLE_NAME        "MidiGuitar"
 #define VL53_ADDR       0x30
-#define XSHUT_VL53      43
-#define VL53_INT        1
+#define XSHUT_VL53      5       // D4  — VL53L1X XSHUT
+#define VL53_INT        9       // D10 — VL53L1X data-ready interrupt
 #define POLL_MS         20
 #define EMA_ALPHA       0.2f
 #define VEL_DEAD_MM     2.0f
@@ -27,11 +29,11 @@
 #define CURVE_LINEAR    0
 #define CURVE_LOG       1
 #define CURVE_EXP       2
-#define STRIP_PIN       9       // D10 — level-shifted via U1 to NeoPixel
-#define BTN_EDIT        3       // D2  — SW1 tactile button
-#define ENC_A           7       // D8  — rotary encoder A
-#define ENC_B           8       // D9  — rotary encoder B
-#define ENC_PUSH        4       // D3  — encoder push switch
+#define STRIP_PIN       1       // D0  — level-shifted via U1 to NeoPixel header (J3)
+#define BTN_EDIT        7       // D8  — SW1 tactile button to GND
+#define ENC_A           3       // D2  — S1 rotary encoder channel A
+#define ENC_B           2       // D1  — S1 rotary encoder channel B
+#define ENC_PUSH        44      // D7  — S1 encoder push switch to GND
 #define NUM_PIXELS      16
 #define OLED_W          128
 #define OLED_H          64
@@ -141,14 +143,6 @@ static unsigned long tPoll        = 0;
 static unsigned long tOled        = 0;
 static unsigned long lastActivity = 0;  // screensaver timer
 static bool          oledAsleep   = false;
-
-// ─── Sensor interrupt ────────────────────────────────────────────────────────
-
-static volatile bool sensorDataReady = false;
-
-static void IRAM_ATTR sensorISR() {
-    sensorDataReady = true;
-}
 
 // ─── Encoder ─────────────────────────────────────────────────────────────────
 
@@ -262,9 +256,9 @@ static bool initSensor() {
     }
     sensor.clearInterrupt();
 
-    // Attach data-ready interrupt (INT pin active LOW)
-    pinMode(VL53_INT, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(VL53_INT), sensorISR, FALLING);
+    // Polled data-ready — INT pin trace on the damaged PCB is unreliable.
+    // checkForDataReady() is one I²C read per loop, fast enough at 400kHz.
+    pinMode(VL53_INT, INPUT_PULLUP);   // hold pin defined so a floating trace doesn't pick up noise
 
     return true;
 }
@@ -1052,8 +1046,7 @@ static void readEditBtn() {
 // ─── Sensor poll ─────────────────────────────────────────────────────────────
 
 static void pollSensor() {
-    if (!sensorDataReady) return;
-    sensorDataReady = false;
+    if (!sensor.checkForDataReady()) return;
     int16_t dist = -1;
     if (sensor.getRangeStatus() == 0) dist = sensor.getDistance();
     sensor.clearInterrupt();
