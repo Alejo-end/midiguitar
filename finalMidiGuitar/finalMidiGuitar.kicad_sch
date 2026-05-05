@@ -3464,6 +3464,16 @@
 		)
 		(uuid "ff111719-0128-4854-a767-a3298c9ea6ff")
 	)
+	(label "Midi Guitar"
+		(at 186.69 190.5 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "249fa24e-13ca-4cca-993e-33a94a1b7956")
+	)
 	(global_label "SDA"
 		(shape input)
 		(at 199.39 67.31 180)
