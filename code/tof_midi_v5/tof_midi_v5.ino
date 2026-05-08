@@ -11,15 +11,14 @@
 
 #define DEBUG           1
 
-// Pin map — XIAO ESP32S3 socket M1
-#define I2C_SDA         43
-#define I2C_SCL         6
-#define I2C_FREQ        400000
+// Pin map — XIAO ESP32-S3 socket M1, matches finalMidiGuitar.kicad_sch.
+// XIAO Dn → GPIO: D0=1 D1=2 D2=3 D3=4 D4=5 D5=6 D6=43 D7=44 D8=7 D9=8 D10=9
+#define I2C_SDA         5     // XIAO D4 → J1 sensor SDA, J4 OLED SDA
+#define I2C_SCL         6     // XIAO D5 → J1 sensor SCL, J4 OLED SCL
+#define I2C_FREQ        400000  // matches debug_oled.ino which works on this board
 
 #define BLE_NAME        "MidiGuitar"
-#define VL53_ADDR       0x30
-#define XSHUT_VL53      5
-#define VL53_INT        9
+#define VL53_ADDR       0x29   // VL53L1X power-on default; no XSHUT remap on this board
 #define POLL_MS         20
 #define EMA_ALPHA       0.2f
 #define VEL_DEAD_MM     2.0f
@@ -27,11 +26,12 @@
 #define CURVE_LINEAR    0
 #define CURVE_LOG       1
 #define CURVE_EXP       2
-#define STRIP_PIN       1
-#define BTN_EDIT        7
-#define ENC_A           3
-#define ENC_B           2
-#define ENC_PUSH        44
+#define STRIP_PIN       9     // XIAO D10 → U1 level shifter A, then R1 → J3 NeoPixel DIN
+// SW1 (Omron tactile, D2/GPIO3) is unused — GPIO3 reads stuck LOW on this PCB.
+// All button actions are now driven from the encoder push (ENC_PUSH).
+#define ENC_A           7     // XIAO D8 → S1 encoder channel A
+#define ENC_B           8     // XIAO D9 → S1 encoder channel B
+#define ENC_PUSH        4     // XIAO D3 → S1 encoder pushbutton to GND
 #define NUM_PIXELS      16
 #define OLED_W          128
 #define OLED_H          64
@@ -44,6 +44,9 @@
 #define AP_PASS         "12345678"
 #define CFG_TAP_WINDOW  600
 #define CFG_TAP_COUNT   3
+// Set to 1 to boot directly into config mode (skips the SW1 triple-tap).
+// Useful when SW1 isn't wired/working. Set back to 0 for normal play mode.
+#define BOOT_INTO_CONFIG 0
 
 // Defaults
 #define MIDI_CH_DEFAULT      1
@@ -94,6 +97,21 @@ enum Mode      : uint8_t { MODE_CC, MODE_PB, MODE_COUNT };
 enum Transport : uint8_t { TR_USB, TR_BLE, TR_BOTH, TR_COUNT };
 enum Page      : uint8_t { PG_LIVE, PG_TRANSPORT, PG_MODE, PG_SETTINGS, PG_PRESETS };
 
+// Settings table types — declared up here so Arduino's auto-generated function
+// prototypes (inserted near the top of the .ino) can see them. The actual
+// SETTINGS[] table and setting* helpers live further down.
+enum SType : uint8_t { T_U8, T_I16, T_BOOL, T_CURVE };
+struct Setting {
+    const char *jsonKey;
+    const char *label;
+    const char *nvsKey;
+    SType       type;
+    void       *slot;
+    int16_t     lo, hi;
+    int8_t      step;
+    void      (*onChange)();
+};
+
 // ─── BLE MIDI ────────────────────────────────────────────────────────────────
 
 #define BLE_MIDI_SVC "03B80E5A-EDE8-4B33-A751-6CE34EC4C700"
@@ -116,7 +134,7 @@ static MidiCB midiCB;
 static USBMIDI           usbMidi;
 static SFEVL53L1X        sensor;
 static Adafruit_NeoPixel ring(NUM_PIXELS, STRIP_PIN, NEO_GRB + NEO_KHZ800);
-static Adafruit_SSD1306  oled(OLED_W, OLED_H, &Wire, -1);
+static Adafruit_SSD1306  oled(OLED_W, OLED_H, &Wire);
 static BLECharacteristic *bleChr = nullptr;
 static Preferences       prefs;
 
@@ -124,8 +142,6 @@ static Preferences       prefs;
 static WebServer        webServer(80);
 static bool             configMode  = false;
 static TaskHandle_t     webTaskH    = nullptr;
-static uint8_t          tapCount    = 0;
-static unsigned long    firstTapTime = 0;
 
 // Settings page state
 #define NUM_SETTINGS    8
@@ -140,8 +156,6 @@ static bool    settingsDirty   = false;
 static int8_t  presetCursor    = 0;
 static uint8_t presetsExistMask = 0;
 static unsigned long dirtyTime = 0;
-static unsigned long editBtnTime = 0;
-static bool    editBtnPrev     = true;
 
 static Transport transport = TR_USB;
 static Mode      mode      = MODE_CC;
@@ -166,10 +180,6 @@ static bool          oledAsleep   = false;
 // ─── Encoder ─────────────────────────────────────────────────────────────────
 
 static volatile int8_t encDelta = 0;
-static unsigned long   encPushTime  = 0;
-static unsigned long   encPushDown  = 0;
-static bool            encPushPrev  = true;
-static bool            encHeld      = false;
 
 static void IRAM_ATTR encISR() {
     static uint8_t prev = 0;
@@ -256,11 +266,7 @@ static void sendPB(uint16_t bend) {
 // ─── Sensor init ─────────────────────────────────────────────────────────────
 
 static bool initSensor() {
-    pinMode(XSHUT_VL53, OUTPUT);
-    digitalWrite(XSHUT_VL53, LOW);  delay(10);
-    digitalWrite(XSHUT_VL53, HIGH); delay(10);
     if (sensor.begin(Wire) != 0) return false;
-    sensor.setI2CAddress(VL53_ADDR);
     sensor.setTimingBudgetInMs(POLL_MS);
     sensor.setIntermeasurementPeriod(POLL_MS);
     sensor.startRanging();
@@ -270,7 +276,6 @@ static bool initSensor() {
         delay(5);
     }
     sensor.clearInterrupt();
-    pinMode(VL53_INT, INPUT_PULLUP);
     return true;
 }
 
@@ -296,9 +301,124 @@ static void initBLE() {
     bleInitDone = true;
 }
 
+// ─── Settings table ─────────────────────────────────────────────────────────
+//
+// Single source of truth for every persisted setting. Order is locked —
+// preset serialization, NVS keys, and the OLED settings page index all
+// depend on it. Append; do not reorder, do not insert in the middle, or
+// existing presets become garbled.
+//
+// SType / Setting are declared earlier (near the other enums) so the
+// Arduino preprocessor's auto-prototypes can see them.
+
+static void onBrightChange() { ring.setBrightness(stripBright); }
+
+static const Setting SETTINGS[] = {
+    { "ch",   "MIDI Ch",  "midiCh",  T_U8,    &midiCh,      1, 16,                   1, nullptr },
+    { "ccd",  "CC Dist",  "ccDist",  T_U8,    &ccDist,      0, 127,                  1, nullptr },
+    { "ccv",  "CC Vel",   "ccVel",   T_U8,    &ccVel,       0, 127,                  1, nullptr },
+    { "dmin", "Dist Min", "distMin", T_I16,   &distMinMm,   DIST_MIN_LO, DIST_MIN_HI, 5, nullptr },
+    { "dmax", "Dist Max", "distMax", T_I16,   &distMaxMm,   DIST_MAX_LO, DIST_MAX_HI,10, nullptr },
+    { "cv",   "Curve",    "curve",   T_CURVE, &curve,       0, 2,                    1, nullptr },
+    { "brt",  "LED Brt",  "bright",  T_U8,    &stripBright, 5, 255,                  5, onBrightChange },
+    { "inv",  "Invert",   "invert",  T_BOOL,  &distInvert,  0, 1,                    1, nullptr },
+};
+static_assert(sizeof(SETTINGS)/sizeof(SETTINGS[0]) == NUM_SETTINGS,
+              "NUM_SETTINGS must equal the SETTINGS table length");
+
+static int32_t settingGet(const Setting &s) {
+    switch (s.type) {
+        case T_U8: case T_CURVE: return *(uint8_t*)s.slot;
+        case T_I16:              return *(int16_t*)s.slot;
+        case T_BOOL:             return *(bool*)s.slot ? 1 : 0;
+    }
+    return 0;
+}
+
+static bool settingSet(const Setting &s, int32_t v) {
+    bool changed = false;
+    switch (s.type) {
+        case T_U8: case T_CURVE: {
+            uint8_t n = (uint8_t)constrain((int)v, s.lo, s.hi);
+            if (n != *(uint8_t*)s.slot) { *(uint8_t*)s.slot = n; changed = true; }
+            break;
+        }
+        case T_I16: {
+            int16_t n = (int16_t)constrain((int)v, s.lo, s.hi);
+            if (n != *(int16_t*)s.slot) { *(int16_t*)s.slot = n; changed = true; }
+            break;
+        }
+        case T_BOOL: {
+            bool n = (v != 0);
+            if (n != *(bool*)s.slot) { *(bool*)s.slot = n; changed = true; }
+            break;
+        }
+    }
+    if (changed && s.onChange) s.onChange();
+    return changed;
+}
+
+static bool settingAdjust(const Setting &s, int8_t dir) {
+    if (s.type == T_BOOL)  return settingSet(s, !*(bool*)s.slot);
+    if (s.type == T_CURVE) return settingSet(s, wrap(*(uint8_t*)s.slot + dir, 3));
+    return settingSet(s, settingGet(s) + dir * s.step);
+}
+
+static void settingFormat(const Setting &s, char *out, size_t n) {
+    if (s.type == T_BOOL) {
+        snprintf(out, n, "%s", *(bool*)s.slot ? "ON" : "OFF");
+    } else if (s.type == T_CURVE) {
+        const char *c[] = { "LIN", "LOG", "EXP" };
+        uint8_t v = *(uint8_t*)s.slot;
+        snprintf(out, n, "%s", v < 3 ? c[v] : "?");
+    } else {
+        snprintf(out, n, "%d", (int)settingGet(s));
+    }
+}
+
+static const Setting *settingByKey(const char *k) {
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        if (strcmp(SETTINGS[i].jsonKey, k) == 0) return &SETTINGS[i];
+    }
+    return nullptr;
+}
+
+// I16 = 2 bytes little-endian; everything else = 1 byte. 16 bytes max.
+static size_t settingsToBytes(uint8_t *buf, size_t cap) {
+    size_t off = 0;
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        const Setting &s = SETTINGS[i];
+        size_t need = (s.type == T_I16) ? 2 : 1;
+        if (off + need > cap) return 0;
+        int32_t v = settingGet(s);
+        buf[off++] = (uint8_t)(v & 0xFF);
+        if (s.type == T_I16) buf[off++] = (uint8_t)((v >> 8) & 0xFF);
+    }
+    return off;
+}
+
+static size_t settingsFromBytes(const uint8_t *buf, size_t len) {
+    size_t off = 0;
+    for (size_t i = 0; i < NUM_SETTINGS; i++) {
+        const Setting &s = SETTINGS[i];
+        size_t need = (s.type == T_I16) ? 2 : 1;
+        if (off + need > len) break;
+        int32_t v = buf[off++];
+        if (s.type == T_I16) v = (int16_t)((uint16_t)v | ((uint16_t)buf[off++] << 8));
+        settingSet(s, v);
+    }
+    return off;
+}
+
 // ─── WiFi config mode ───────────────────────────────────────────────────────
 // Page bytes live in web_ui_html.h. web_ui.html is the browser preview
 // — keep them in sync by hand.
+//
+// Forward decls: implementations live further down (Actions / Presets).
+static bool setTransport(Transport newT);
+static bool setMode(Mode newM);
+static bool savePresetTo(uint8_t slot);
+static bool loadPresetFrom(uint8_t slot);
 
 static void handleRoot() {
     webServer.send_P(200, "text/html", WEB_UI_HTML);
@@ -426,25 +546,6 @@ static void exitConfigMode() {
 #if DEBUG
     Serial.println("Config mode off");
 #endif
-}
-
-static void checkConfigGesture() {
-    static bool prev = true;
-    bool now = digitalRead(BTN_EDIT) == LOW;
-    if (now && !prev) {
-        unsigned long t = millis();
-        if (t - firstTapTime > CFG_TAP_WINDOW) {
-            tapCount = 1;
-            firstTapTime = t;
-        } else {
-            tapCount++;
-        }
-        if (tapCount >= CFG_TAP_COUNT) {
-            tapCount = 0;
-            configMode ? exitConfigMode() : enterConfigMode();
-        }
-    }
-    prev = now;
 }
 
 // ─── NeoPixel ────────────────────────────────────────────────────────────────
@@ -693,125 +794,6 @@ static void drawPageMode() {
     drawSegmentedPage("MODE", L, MODE_COUNT, (uint8_t)mode, 2, 58, 40);
 }
 
-// ─── Settings table ─────────────────────────────────────────────────────────
-//
-// Single source of truth for every persisted setting. Order is locked —
-// preset serialization, NVS keys, and the OLED settings page index all
-// depend on it. Append; do not reorder, do not insert in the middle, or
-// existing presets become garbled.
-
-enum SType : uint8_t { T_U8, T_I16, T_BOOL, T_CURVE };
-
-struct Setting {
-    const char *jsonKey;     // web ?k=
-    const char *label;       // OLED row label
-    const char *nvsKey;      // NVS key under "midi_guitar"
-    SType       type;
-    void       *slot;        // address of the runtime variable
-    int16_t     lo, hi;      // bounds for U8 / I16 / CURVE
-    int8_t      step;        // encoder delta multiplier (I16/U8)
-    void      (*onChange)(); // optional, fired iff value actually changed
-};
-
-static void onBrightChange() { ring.setBrightness(stripBright); }
-
-static const Setting SETTINGS[] = {
-    { "ch",   "MIDI Ch",  "midiCh",  T_U8,    &midiCh,      1, 16,                   1, nullptr },
-    { "ccd",  "CC Dist",  "ccDist",  T_U8,    &ccDist,      0, 127,                  1, nullptr },
-    { "ccv",  "CC Vel",   "ccVel",   T_U8,    &ccVel,       0, 127,                  1, nullptr },
-    { "dmin", "Dist Min", "distMin", T_I16,   &distMinMm,   DIST_MIN_LO, DIST_MIN_HI, 5, nullptr },
-    { "dmax", "Dist Max", "distMax", T_I16,   &distMaxMm,   DIST_MAX_LO, DIST_MAX_HI,10, nullptr },
-    { "cv",   "Curve",    "curve",   T_CURVE, &curve,       0, 2,                    1, nullptr },
-    { "brt",  "LED Brt",  "bright",  T_U8,    &stripBright, 5, 255,                  5, onBrightChange },
-    { "inv",  "Invert",   "invert",  T_BOOL,  &distInvert,  0, 1,                    1, nullptr },
-};
-static_assert(sizeof(SETTINGS)/sizeof(SETTINGS[0]) == NUM_SETTINGS,
-              "NUM_SETTINGS must equal the SETTINGS table length");
-
-static int32_t settingGet(const Setting &s) {
-    switch (s.type) {
-        case T_U8: case T_CURVE: return *(uint8_t*)s.slot;
-        case T_I16:              return *(int16_t*)s.slot;
-        case T_BOOL:             return *(bool*)s.slot ? 1 : 0;
-    }
-    return 0;
-}
-
-static bool settingSet(const Setting &s, int32_t v) {
-    bool changed = false;
-    switch (s.type) {
-        case T_U8: case T_CURVE: {
-            uint8_t n = (uint8_t)constrain((int)v, s.lo, s.hi);
-            if (n != *(uint8_t*)s.slot) { *(uint8_t*)s.slot = n; changed = true; }
-            break;
-        }
-        case T_I16: {
-            int16_t n = (int16_t)constrain((int)v, s.lo, s.hi);
-            if (n != *(int16_t*)s.slot) { *(int16_t*)s.slot = n; changed = true; }
-            break;
-        }
-        case T_BOOL: {
-            bool n = (v != 0);
-            if (n != *(bool*)s.slot) { *(bool*)s.slot = n; changed = true; }
-            break;
-        }
-    }
-    if (changed && s.onChange) s.onChange();
-    return changed;
-}
-
-static bool settingAdjust(const Setting &s, int8_t dir) {
-    if (s.type == T_BOOL)  return settingSet(s, !*(bool*)s.slot);
-    if (s.type == T_CURVE) return settingSet(s, wrap(*(uint8_t*)s.slot + dir, 3));
-    return settingSet(s, settingGet(s) + dir * s.step);
-}
-
-static void settingFormat(const Setting &s, char *out, size_t n) {
-    if (s.type == T_BOOL) {
-        snprintf(out, n, "%s", *(bool*)s.slot ? "ON" : "OFF");
-    } else if (s.type == T_CURVE) {
-        const char *c[] = { "LIN", "LOG", "EXP" };
-        uint8_t v = *(uint8_t*)s.slot;
-        snprintf(out, n, "%s", v < 3 ? c[v] : "?");
-    } else {
-        snprintf(out, n, "%d", (int)settingGet(s));
-    }
-}
-
-static const Setting *settingByKey(const char *k) {
-    for (size_t i = 0; i < NUM_SETTINGS; i++) {
-        if (strcmp(SETTINGS[i].jsonKey, k) == 0) return &SETTINGS[i];
-    }
-    return nullptr;
-}
-
-// I16 = 2 bytes little-endian; everything else = 1 byte. 16 bytes max.
-static size_t settingsToBytes(uint8_t *buf, size_t cap) {
-    size_t off = 0;
-    for (size_t i = 0; i < NUM_SETTINGS; i++) {
-        const Setting &s = SETTINGS[i];
-        size_t need = (s.type == T_I16) ? 2 : 1;
-        if (off + need > cap) return 0;
-        int32_t v = settingGet(s);
-        buf[off++] = (uint8_t)(v & 0xFF);
-        if (s.type == T_I16) buf[off++] = (uint8_t)((v >> 8) & 0xFF);
-    }
-    return off;
-}
-
-static size_t settingsFromBytes(const uint8_t *buf, size_t len) {
-    size_t off = 0;
-    for (size_t i = 0; i < NUM_SETTINGS; i++) {
-        const Setting &s = SETTINGS[i];
-        size_t need = (s.type == T_I16) ? 2 : 1;
-        if (off + need > len) break;
-        int32_t v = buf[off++];
-        if (s.type == T_I16) v = (int16_t)((uint16_t)v | ((uint16_t)buf[off++] << 8));
-        settingSet(s, v);
-    }
-    return off;
-}
-
 // ─── Settings page (table-driven) ──────────────────────────────────────────
 
 static void getSettingInfo(uint8_t idx, char *label, char *val, size_t vLen) {
@@ -1028,6 +1010,9 @@ static void refreshOLED() {
 // ─── Intro ───────────────────────────────────────────────────────────────────
 
 static void playIntro() {
+#if DEBUG
+    Serial.println("[boot] intro");
+#endif
     oled.clearDisplay();
     oled.display();
     uint16_t hue = modeHue();
@@ -1115,111 +1100,120 @@ static void toggleBypass() {
 
 // ─── Encoder + menu ──────────────────────────────────────────────────────────
 
+// Encoder push gestures:
+//   short tap (release < 400 ms) — page contextual action
+//                                  (PG_LIVE: bypass, PG_TRANSPORT/MODE: cycle,
+//                                   PG_SETTINGS: toggle edit, PG_PRESETS: load)
+//   long press (held ≥ 600 ms)   — advance to next page
+//   long press on PG_PRESETS     — save preset (≥ 1500 ms)
+//   triple-tap (3 short ≤ 600 ms) — toggle WiFi config mode
+//
+// Short taps are deferred until the tap-window closes so a triple-tap
+// doesn't fire stray contextual actions on its way to config mode.
 static void handleEncoder() {
     noInterrupts();
     int8_t delta = encDelta;
     encDelta = 0;
     interrupts();
 
-    bool btnNow = digitalRead(ENC_PUSH) == LOW;
-    bool shortPress = false;
-    if (btnNow && !encPushPrev) { encPushDown = millis(); encHeld = true; }
-    if (!btnNow && encPushPrev && encHeld) {
-        unsigned long held = millis() - encPushDown;
-        encHeld = false;
-        if (held < 500 && millis() - encPushTime > DEBOUNCE_MS) {
-            shortPress = true;
-            encPushTime = millis();
+    static bool          prev       = false;
+    static uint32_t      pressStart = 0;
+    static uint32_t      firstTapAt = 0;
+    static uint8_t       pendingTaps = 0;
+    static bool          longFired  = false;
+    static bool          saveFired  = false;
+
+    const uint32_t TAP_MAX_MS  = 400;
+    const uint32_t HOLD_MIN_MS = 600;
+    const uint32_t SAVE_MIN_MS = 1500;
+    const uint32_t TAP_WIN_MS  = CFG_TAP_WINDOW;
+
+    bool     pushed = digitalRead(ENC_PUSH) == LOW;
+    uint32_t now    = millis();
+
+    // Press edge
+    if (pushed && !prev) {
+        pressStart = now;
+        longFired  = false;
+        saveFired  = false;
+    }
+
+    // Held — fire long-hold actions exactly once
+    if (pushed && !configMode) {
+        if (!saveFired && currentPage == PG_PRESETS && now - pressStart >= SAVE_MIN_MS) {
+            saveFired = true;
+            longFired = true;  // suppress page-advance below
+            showToast(savePresetTo((uint8_t)presetCursor) ? "SAVED" : "ERR");
+            oledDirty = true;
+        }
+        if (!longFired && now - pressStart >= HOLD_MIN_MS) {
+            longFired = true;
+            currentPage = (Page)wrap((int8_t)currentPage + 1, NUM_PAGES);
+            oledDirty = true;
         }
     }
-    if (encHeld && (millis() - encPushDown >= 500)) {
-        toggleBypass();
-        encHeld = false;
-        oledDirty = true;
+
+    // Release edge — register a short tap for the tap-window logic
+    if (!pushed && prev) {
+        uint32_t held = now - pressStart;
+        if (held < TAP_MAX_MS && !longFired && !saveFired) {
+            if (now - firstTapAt > TAP_WIN_MS) {
+                pendingTaps = 1;
+                firstTapAt  = now;
+            } else {
+                pendingTaps++;
+            }
+        }
     }
-    encPushPrev = btnNow;
 
-    if (delta == 0 && !shortPress) return;
-    oledDirty = true;
-
-    if (configMode) return;  // encoder disabled in config mode
-
-    if (shortPress) {
-        currentPage = (Page)wrap((int8_t)currentPage + 1, NUM_PAGES);
-        return;
-    }
-    if (delta != 0) {
-        switch (currentPage) {
-            case PG_LIVE: {
-                const Setting *s = settingByKey("brt");
-                if (s && settingAdjust(*s, delta > 0 ? 1 : -1)) {
-                    settingsDirty = true; dirtyTime = millis();
+    // Tap window expired — flush pending taps
+    if (pendingTaps > 0 && now - firstTapAt > TAP_WIN_MS) {
+        if (pendingTaps >= CFG_TAP_COUNT) {
+            configMode ? exitConfigMode() : enterConfigMode();
+        } else if (!configMode) {
+            for (uint8_t i = 0; i < pendingTaps; i++) {
+                switch (currentPage) {
+                    case PG_LIVE:      toggleBypass();                                                       break;
+                    case PG_TRANSPORT: cycleTransport(1);                                                    break;
+                    case PG_MODE:      cycleMode(1);                                                         break;
+                    case PG_SETTINGS:  settingsEditing = !settingsEditing;                                   break;
+                    case PG_PRESETS:   showToast(loadPresetFrom((uint8_t)presetCursor) ? "LOADED" : "EMPTY"); break;
+                    default: break;
                 }
-                break;
             }
-            case PG_TRANSPORT: cycleTransport(delta > 0 ? 1 : -1); break;
-            case PG_MODE:      cycleMode(delta > 0 ? 1 : -1);      break;
-            case PG_SETTINGS:
-                if (settingsEditing) adjustSetting(settingsCursor, delta > 0 ? 1 : -1);
-                else settingsCursor = constrain(settingsCursor + (delta > 0 ? 1 : -1), 0, NUM_SETTINGS - 1);
-                break;
-            case PG_PRESETS:
-                presetCursor = constrain(presetCursor + (delta > 0 ? 1 : -1), 0, NUM_PRESETS - 1);
-                break;
-            default: break;
         }
-    }
-}
-
-// Short tap fires the page's primary action on the press edge for snappy
-// response. PG_PRESETS defers: tap-release loads the highlighted slot,
-// hold ≥1 s saves it. Note: triple-tapping on PG_PRESETS will fire one
-// or two preset-load actions before entering config mode — harmless
-// (load is idempotent) and not worth deferring the load to fix.
-static void readEditBtn() {
-    static unsigned long pressStart = 0;
-    static bool          pressActive = false;
-    static bool          longFired   = false;
-
-    bool btnNow = digitalRead(BTN_EDIT) == LOW;
-
-    if (btnNow && !editBtnPrev && millis() - editBtnTime > DEBOUNCE_MS) {
-        editBtnTime = millis();
-        pressStart  = millis();
-        pressActive = true;
-        longFired   = false;
-
-        bool midSequence = (tapCount > 0 && tapCount < CFG_TAP_COUNT);
-        if (!midSequence && !configMode && currentPage != PG_PRESETS) {
-            switch (currentPage) {
-                case PG_LIVE:      toggleBypass();                     break;
-                case PG_TRANSPORT: cycleTransport(1);                  break;
-                case PG_MODE:      cycleMode(1);                       break;
-                case PG_SETTINGS:  settingsEditing = !settingsEditing; break;
-                default: break;
-            }
-            oledDirty = true;
-        }
-    }
-
-    if (pressActive && !longFired && currentPage == PG_PRESETS && !configMode
-        && millis() - pressStart >= 1000) {
-        longFired = true;
-        showToast(savePresetTo((uint8_t)presetCursor) ? "SAVED" : "ERR");
+        pendingTaps = 0;
         oledDirty = true;
     }
 
-    if (!btnNow && editBtnPrev) {
-        if (pressActive && !longFired && currentPage == PG_PRESETS && !configMode) {
-            showToast(loadPresetFrom((uint8_t)presetCursor) ? "LOADED" : "EMPTY");
-            oledDirty = true;
-        }
-        pressActive = false;
-    }
+    prev = pushed;
 
-    editBtnPrev = btnNow;
-    if (currentPage != PG_SETTINGS && settingsEditing) settingsEditing = false;
+    // Rotation
+    if (delta == 0) return;
+    oledDirty = true;
+    if (configMode) return;
+
+    switch (currentPage) {
+        case PG_LIVE: {
+            const Setting *s = settingByKey("brt");
+            if (s && settingAdjust(*s, delta > 0 ? 1 : -1)) {
+                settingsDirty = true; dirtyTime = millis();
+            }
+            break;
+        }
+        case PG_TRANSPORT: cycleTransport(delta > 0 ? 1 : -1); break;
+        case PG_MODE:      cycleMode(delta > 0 ? 1 : -1);      break;
+        case PG_SETTINGS:
+            if (settingsEditing) adjustSetting(settingsCursor, delta > 0 ? 1 : -1);
+            else settingsCursor = constrain(settingsCursor + (delta > 0 ? 1 : -1), 0, NUM_SETTINGS - 1);
+            break;
+        case PG_PRESETS:
+            presetCursor = constrain(presetCursor + (delta > 0 ? 1 : -1), 0, NUM_PRESETS - 1);
+            break;
+        default: break;
+    }
 }
+
 
 // ─── Sensor poll ─────────────────────────────────────────────────────────────
 
@@ -1258,34 +1252,64 @@ static void pollSensor() {
 void setup() {
     Serial.begin(115200);
     delay(2000);
+#if DEBUG
+    Serial.println("\n[boot] tof_midi_v5");
+#endif
 
     loadSettings();
     refreshPresetsExist();
 
-    pinMode(BTN_EDIT, INPUT_PULLUP);
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
     pinMode(ENC_PUSH, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
 
-    USB.enableDFU();
-    usbMidi.begin();
-    USB.begin();
-    if (wantsBLE()) initBLE();
-
+    // I2C + OLED + NeoPixel come up before USB/BLE so the user sees feedback
+    // immediately and the radios can't disturb bus settling.
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ);
+    delay(50);
 
-    if (oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) playIntro();
+    // Bus warm-up scan — the SSD1306 clone on this PCB rejects the init
+    // sequence unless dummy I²C traffic precedes it. Keep this even with
+    // DEBUG off; the prints are diagnostic but the loop is load-bearing.
+    uint8_t i2cFound = 0;
+    for (uint8_t a = 1; a < 127; a++) {
+        Wire.beginTransmission(a);
+        if (Wire.endTransmission() == 0) {
+            i2cFound++;
+#if DEBUG
+            Serial.printf("[I2C] 0x%02X ACK\n", a);
+#endif
+        }
+    }
+#if DEBUG
+    Serial.printf("[I2C] %u device(s)\n", i2cFound);
+    Serial.print("[boot] oled.begin ... ");
+#endif
+    bool oledOK = oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR);
+#if DEBUG
+    Serial.println(oledOK ? "OK" : "FAIL — no ACK at 0x3C");
+#endif
 
     ring.begin();
     ring.setBrightness(stripBright);
     ring.show();
 
+    if (oledOK) playIntro();
+
+    USB.enableDFU();
+    usbMidi.begin();
+    USB.begin();
+    if (wantsBLE()) initBLE();
+
     for (uint8_t attempt = 0; attempt < 3; attempt++) {
         if (initSensor()) { sensorOK = true; break; }
         delay(200);
     }
+#if DEBUG
+    Serial.printf("[boot] sensor %s\n", sensorOK ? "OK" : "FAIL");
+#endif
     if (!sensorOK) showToast("NO SENSOR");
 
     // Bumped to 10s — WiFi init can stall longer than 5s on first boot
@@ -1299,16 +1323,32 @@ void setup() {
 
     lastActivity = millis();
     oledDirty = true;
+
+#if BOOT_INTO_CONFIG
+    enterConfigMode();
+#endif
 }
 
 void loop() {
     esp_task_wdt_reset();
 
+    // TEMP — log raw encoder pin states + accumulated delta every 200 ms
+    // so we can diagnose direction-only issues. Remove once fixed.
+    static uint32_t tDbg = 0;
+    static int32_t  netDelta = 0;
+    if (millis() - tDbg > 200) {
+        tDbg = millis();
+        Serial.printf("[enc] A=%d B=%d push=%d  net=%ld  page=%u\n",
+                      digitalRead(ENC_A), digitalRead(ENC_B),
+                      digitalRead(ENC_PUSH),
+                      (long)netDelta, (unsigned)currentPage);
+    }
+    netDelta += encDelta;  // peek before handleEncoder consumes it
+
     bool encMoved = (encDelta != 0);
 
-    checkConfigGesture();
     handleEncoder();
-    readEditBtn();
+    if (currentPage != PG_SETTINGS && settingsEditing) settingsEditing = false;
 
     if (sensorOK) pollSensor();
 
@@ -1320,7 +1360,7 @@ void loop() {
         if (configMode) oledDirty = true;
     }
 
-    if (encMoved || !encPushPrev || liveVel > 5) {
+    if (encMoved || digitalRead(ENC_PUSH) == LOW || liveVel > 5) {
         lastActivity = millis();
         if (oledAsleep) { oledAsleep = false; oledDirty = true; }
     }
