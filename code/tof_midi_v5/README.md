@@ -11,8 +11,10 @@ and play any soft synth.
 - **VL53L1X ToF sensor** — reads hand distance (10–500 mm)
 - **NeoPixel ring (16 LEDs)** — visual feedback
 - **OLED 128×64** — small status screen
-- **Rotary encoder + push** — main navigation
-- **Tactile button (SW1)** — context-sensitive action
+- **Rotary encoder + push** — only control surface; every gesture
+  (tap / hold / triple-tap) is on the encoder push
+- **Tactile button (SW1)** — populated on the PCB but **unused** in
+  firmware on this PCB rev (GPIO 3 reads stuck LOW; see source)
 - **Custom milled PCB** — wires it all to the XIAO
 
 All on the body of the guitar. USB-C for power + MIDI; battery is not
@@ -32,44 +34,53 @@ required.
 ## How to use it
 
 ### Powering on
-Plug USB-C in. After a short intro animation it lands on the **LIVE**
-page, ready to play.
+Plug USB-C in. After a short intro animation a **boot self-test card**
+flashes briefly (OLED / I²C device count / SENSOR pass-fail), then it
+lands on the **LIVE** page, ready to play.
 
 ### The five pages
-Press the encoder to cycle pages:
+**Long-press the encoder (≥ 600 ms)** to advance to the next page:
 
 | Page         | What it shows / does                          |
 |--------------|-----------------------------------------------|
 | **LIVE**     | Distance bar, velocity bar, raw mm, mode info |
 | **OUTPUT**   | Pick USB, BLE, or both                        |
 | **MODE**     | Pick CC or BEND                               |
-| **SETTINGS** | Eight values: MIDI channel, CC numbers, distance min/max, curve, LED brightness, invert |
+| **SETTINGS** | Eight values: MIDI channel, CC numbers, distance min/max, curve, LED brightness, invert. The header also shows live free-heap in KB (`Hxxk`) — useful for catching leaks. |
 | **PRESETS**  | 8 saved snapshots — load on the fly, save the current setup |
 
-Turn the encoder to change values. On SETTINGS, press SW1 to enter
-edit mode for the highlighted row.
+Turn the encoder to change values. On SETTINGS, a short **tap** on the
+encoder toggles edit mode for the highlighted row.
 
-### The button (SW1)
-- **Tap on LIVE** → mute/unmute (bypass)
-- **Tap on OUTPUT/MODE** → cycle to the next option
-- **Tap on SETTINGS** → toggle edit on the highlighted row
-- **Tap on PRESETS** → load the highlighted slot
-- **Hold ≥1 s on PRESETS** → save current settings to the highlighted slot
-- **Triple-tap from anywhere** → enter WiFi config mode
+### Encoder-push gestures
+Every gesture is on the encoder push (the tactile SW1 is unused on this
+PCB rev).
 
-### Long-press the encoder
-Mute / unmute regardless of which page you're on.
+| Gesture                         | Effect                                                |
+|---------------------------------|-------------------------------------------------------|
+| **Short tap** (< 400 ms) on LIVE        | mute / unmute (bypass)                        |
+| **Short tap** on OUTPUT / MODE          | cycle to the next option                      |
+| **Short tap** on SETTINGS               | toggle edit on the highlighted row            |
+| **Short tap** on PRESETS                | load the highlighted slot                     |
+| **Long-press** (≥ 600 ms)               | advance to the next page                      |
+| **Long-hold** on PRESETS (≥ 1.5 s)      | save current settings to the highlighted slot |
+| **Triple-tap** (3 short within 600 ms)  | enter / exit WiFi config mode                 |
+| **Hold during boot** (≥ 5 s)            | **factory reset** — clears NVS and reboots    |
 
 ## The web UI
 
-Triple-tap SW1 → the device starts a WiFi network called
+Triple-tap the encoder push → the device starts a WiFi network called
 **MidiGuitar-Config** (password `12345678`). Connect with your phone
-and open <http://192.168.4.1>.
+and open either:
+
+- <http://192.168.4.1> — always works
+- <http://midiguitar.local> — works wherever mDNS / Bonjour is
+  honoured (macOS, iOS, recent Windows; Android needs a Bonjour app)
 
 You'll see a dark, mobile-friendly page with every setting on it,
 plus a live monitor and 8 preset slots with `LOAD` / `SAVE` buttons.
 Tap a control, change it, that's it — the device saves automatically.
-Triple-tap SW1 again to exit and turn WiFi off.
+Triple-tap the encoder again to exit and turn WiFi off.
 
 The page works without internet because the ESP32 is the access point.
 Everything (HTML, CSS, JS) is served from the device itself.
@@ -81,9 +92,9 @@ CC numbers, distance bounds, curve, brightness, invert). Use them to
 switch between sounds/songs without re-tweaking.
 
 **On the device** (PRESETS page):
-- Encoder selects the slot.
-- Tap SW1 to load.
-- Hold SW1 for 1 second to save current settings to the highlighted slot.
+- Encoder rotation selects the slot.
+- Short tap on the encoder loads.
+- Hold the encoder ≥ 1.5 s to save current settings to the highlighted slot.
 - Filled slots have a solid border; empty slots have a dotted border.
 
 **On the phone** (web UI):
@@ -107,6 +118,14 @@ switch between sounds/songs without re-tweaking.
 
 Settings persist across reboots (saved to flash 2 seconds after the
 last change).
+
+## Factory reset
+
+Hold the encoder push down while plugging USB-C in (or pressing reset).
+After ~5 seconds the firmware clears its NVS namespace and reboots —
+every setting and preset slot returns to defaults. There's no on-screen
+prompt because the OLED isn't initialised yet at that point in boot;
+the reboot itself is the confirmation.
 
 ## Building & flashing
 
@@ -147,12 +166,15 @@ the header before flashing.
 - **WiFi config mode disables Bluetooth-grade timing.** WiFi and BLE
   share the same radio. Don't keep config mode open while playing
   over BLE — it'll glitch. Triple-tap to exit when you're done.
-- **First boot might show "NO SENSOR".** Check the ribbon cable; the
+- **Boot self-test** shows OLED / I²C / SENSOR status for ~1 s after
+  the intro. If `SENSOR` reads `FAIL`, check the ribbon cable; the
   VL53L1X retries 3 times at boot.
 - **USB MIDI shows up as "MidiGuitar"** on the host.
 - **Bluetooth pairing**: in iOS/macOS use the Audio MIDI Setup app's
   MIDI Studio → Bluetooth Configuration. Android needs a BLE-MIDI
   capable app.
+- **Heap monitor**: the SETTINGS page header shows `Hxxk` (free heap
+  in KB) when not editing. Watch it to catch leaks while developing.
 - All persisted settings (channel, CCs, distance bounds, curve,
   brightness, invert, transport, mode) come back on reboot. Presets
   also include mode.
@@ -160,6 +182,7 @@ the header before flashing.
 ## Known limits
 
 - Single sensor (a second VL53L1X is on the roadmap).
-- No on-device factory reset yet — re-flashing wipes NVS if needed.
 - Web config mode requires triple-tap; there's no physical "config"
   switch.
+- SW1 / GPIO 3 is unusable on this PCB rev — every gesture is on the
+  encoder push.

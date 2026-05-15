@@ -2,10 +2,37 @@
 //
 // VL53L1X — long-range hand gestures (10–500mm)
 // MIDI: CC20 (distance), CC21 (velocity), Pitch Bend (14-bit)
-// Config: triple-tap SW1 to open WiFi AP at 192.168.4.1
+// Config: triple-tap encoder push to open WiFi AP at 192.168.4.1
 //
 // Board: XIAO_ESP32S3, USB: USB-OTG (TinyUSB)
 // Libs: SparkFun VL53L1X, Adafruit NeoPixel, Adafruit SSD1306, Adafruit GFX
+//
+// ─── In-file roadmap (work that fits inside this single .ino) ─────────────
+// Cross-reference: ./CLAUDE.md §4 for the full project roadmap. The items
+// here are the subset that can land without splitting the sketch.
+//
+//   [done]
+//   B1  8-slot preset system (SETTINGS table + presetsExistMask).
+//   A1  WiFi exit race — webTaskAlive handshake in exitConfigMode().
+//   A2  Comment on configMode-not-in-SETTINGS (next to its declaration).
+//   A3  Heap monitor — KB readout in the PG_SETTINGS header (non-edit).
+//   A5  Boot self-test card via drawBootBadges() post-sensor-init.
+//   C1  mDNS — http://midiguitar.local in enterConfigMode().
+//   D1  Factory reset — hold ENC_PUSH ≥ 5 s at boot → prefs.clear().
+//
+//   [now-able]
+//   B4  MIDI Learn — long-press encoder on PG_LIVE → capture next 2s of
+//       readings as new distMin/distMax. ~40 LOC, all inside handleEncoder
+//       + pollSensor (gated by a `learnUntil` timestamp).
+//   D4  SysEx preset dump/restore — usbMidi has `.sendSysEx`/`.read`.
+//       Format: 0xF0 0x7D 0x4D 0x47 <slot> <payload> 0xF7. ~60 LOC.
+//   --  Multi-tap dispatch — currently fires N actions for N taps; user-
+//       facing behavior change to collapse to single dispatch per flush.
+//
+//   [perf items]
+//   Per-loop millis() caching, rate-limited sensor polling, and TEMP-debug
+//   block gating are already applied. Future: track max loop micros to
+//   verify the < 5 ms MIDI latency target in §2.1.
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +65,18 @@
 #define OLED_ADDR       0x3C
 #define NUM_PAGES       5
 #define DEBOUNCE_MS     180
+
+// Loop tunables
+#define OLED_REFRESH_MS         66     // ~15 fps cap (CLAUDE.md §3.3)
+#define NVS_SAVE_DEBOUNCE_MS    2000   // 2s after last setting change (§2.5)
+#define OLED_SLEEP_MS           60000  // 60s no-activity → blank screen
+#define LIVE_VEL_THRESH         5      // liveVel above this keeps OLED awake
+#define BOOT_SERIAL_WAIT_MS     2000   // only honoured when DEBUG=1
+
+// Encoder push gesture thresholds (used by handleEncoder)
+#define ENC_TAP_MAX_MS          400    // release within this → short tap
+#define ENC_HOLD_MIN_MS         600    // held this long → next page
+#define ENC_SAVE_MIN_MS         1500   // held this long on PG_PRESETS → save
 
 // WiFi config mode
 #define AP_SSID         "MidiGuitar-Config"
@@ -89,6 +128,7 @@ static bool     distInvert  = false;
 #include <BLE2902.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <ESPmDNS.h>
 #include "web_ui_html.h"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -138,10 +178,14 @@ static Adafruit_SSD1306  oled(OLED_W, OLED_H, &Wire);
 static BLECharacteristic *bleChr = nullptr;
 static Preferences       prefs;
 
-// WiFi config mode state
+// WiFi config mode state.
+// CLAUDE.md A2 — `configMode` is intentionally NOT in the SETTINGS table.
+// If the board crashes while in config mode, NVS will not restore it, so
+// the next boot comes up in performance mode (play). Don't "fix" that.
 static WebServer        webServer(80);
-static bool             configMode  = false;
-static TaskHandle_t     webTaskH    = nullptr;
+static bool             configMode   = false;
+static TaskHandle_t     webTaskH     = nullptr;
+static volatile bool    webTaskAlive = false;     // set by webTask itself
 
 // Settings page state
 #define NUM_SETTINGS    8
@@ -498,12 +542,14 @@ static void handleApiPreset() {
 
 static void webTask(void*) {
     esp_task_wdt_add(nullptr);
+    webTaskAlive = true;
     while (configMode) {
         webServer.handleClient();
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(2));
     }
     esp_task_wdt_delete(nullptr);
+    webTaskAlive = false;     // signal exitConfigMode that handleClient won't run again
     vTaskDelete(nullptr);
 }
 
@@ -516,6 +562,11 @@ static void enterConfigMode() {
     WiFi.setTxPower(WIFI_POWER_8_5dBm);  // save heap
     delay(100);
     IPAddress ip = WiFi.softAPIP();
+
+    // CLAUDE.md C1 — resolve http://midiguitar.local on hosts that honour
+    // mDNS (macOS / iOS always; Windows ≥10 mostly; Android needs Bonjour).
+    MDNS.begin("midiguitar");
+    MDNS.addService("http", "tcp", 80);
 
     webServer.on("/",           handleRoot);
     webServer.on("/api/state",  handleApiState);
@@ -530,7 +581,7 @@ static void enterConfigMode() {
     snprintf(ipMsg, sizeof(ipMsg), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
     showToast(ipMsg);
 #if DEBUG
-    Serial.printf("Config mode: http://%s\n", ipMsg);
+    Serial.printf("Config mode: http://%s  (or http://midiguitar.local)\n", ipMsg);
     Serial.printf("Free heap: %u\n", ESP.getFreeHeap());
 #endif
 }
@@ -538,10 +589,19 @@ static void enterConfigMode() {
 static void exitConfigMode() {
     if (!configMode) return;
     configMode = false;
-    delay(50);
+
+    // CLAUDE.md A1 — wait for webTask to clear webTaskAlive before stopping
+    // the server, otherwise its in-flight handleClient() could run after
+    // webServer.stop() returns and dereference a torn-down handler.
+    const uint32_t deadline = millis() + 200;
+    while (webTaskAlive && (int32_t)(millis() - deadline) < 0) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    MDNS.end();
     webServer.stop();
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
+    webTaskH = nullptr;
     showToast("CFG OFF");
 #if DEBUG
     Serial.println("Config mode off");
@@ -709,8 +769,10 @@ static void drawPageConfig() {
     oled.print("URL:");
     oled.setCursor(36, 40);
     oled.print("192.168.4.1");
+    oled.setCursor(36, 48);
+    oled.print("or midiguitar.local");
 
-    oled.setCursor(0, 54);
+    oled.setCursor(0, 56);
     oled.print("Triple-tap to exit");
 }
 
@@ -863,6 +925,15 @@ static void drawPageSettings() {
     if (settingsEditing) {
         oled.setTextColor(SSD1306_BLACK);
         oled.setCursor(OLED_W - 24, 2); oled.print("EDIT");
+        oled.setTextColor(SSD1306_WHITE);
+    } else {
+        // CLAUDE.md A3 — live heap monitor in the header (KB).
+        // Hidden in plain sight: only appears when not editing, so the EDIT
+        // badge takes precedence. Useful for catching leaks when adding
+        // features without burning a whole page.
+        oled.setTextColor(SSD1306_BLACK);
+        oled.setCursor(OLED_W - 28, 2);
+        oled.printf("H%uk", (unsigned)(ESP.getFreeHeap() / 1024));
         oled.setTextColor(SSD1306_WHITE);
     }
 
@@ -1058,6 +1129,32 @@ static void playIntro() {
     ring.show();
 }
 
+// CLAUDE.md A5 — boot self-test card. Runs once between sensor init and
+// the WDT arm so a failed sensor (or unexpected I²C device count) is
+// visible without a serial console. Pre-WDT, so the 800 ms hold is safe.
+static void drawBootBadges(bool oledOK, uint8_t i2cDev, bool sensorOK) {
+    if (!oledOK) return;
+    oled.clearDisplay();
+    oled.setTextSize(1);
+    oled.fillRect(0, 0, OLED_W, 11, SSD1306_WHITE);
+    oled.setTextColor(SSD1306_BLACK);
+    oled.setCursor(4, 2);
+    oled.print("BOOT SELF-TEST");
+    oled.setTextColor(SSD1306_WHITE);
+
+    oled.setCursor(0, 18);  oled.print("OLED");
+    oled.setCursor(60, 18); oled.print("OK");          // got here = OLED responded
+
+    oled.setCursor(0, 32);  oled.print("I2C");
+    oled.setCursor(60, 32); oled.printf("%u dev", i2cDev);
+
+    oled.setCursor(0, 46);  oled.print("SENSOR");
+    oled.setCursor(60, 46); oled.print(sensorOK ? "OK" : "FAIL");
+
+    oled.display();
+    delay(800);
+}
+
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
 // Setters return true iff state actually changed. Shared between the
@@ -1123,11 +1220,6 @@ static void handleEncoder() {
     static bool          longFired  = false;
     static bool          saveFired  = false;
 
-    const uint32_t TAP_MAX_MS  = 400;
-    const uint32_t HOLD_MIN_MS = 600;
-    const uint32_t SAVE_MIN_MS = 1500;
-    const uint32_t TAP_WIN_MS  = CFG_TAP_WINDOW;
-
     bool     pushed = digitalRead(ENC_PUSH) == LOW;
     uint32_t now    = millis();
 
@@ -1140,13 +1232,13 @@ static void handleEncoder() {
 
     // Held — fire long-hold actions exactly once
     if (pushed && !configMode) {
-        if (!saveFired && currentPage == PG_PRESETS && now - pressStart >= SAVE_MIN_MS) {
+        if (!saveFired && currentPage == PG_PRESETS && now - pressStart >= ENC_SAVE_MIN_MS) {
             saveFired = true;
             longFired = true;  // suppress page-advance below
             showToast(savePresetTo((uint8_t)presetCursor) ? "SAVED" : "ERR");
             oledDirty = true;
         }
-        if (!longFired && now - pressStart >= HOLD_MIN_MS) {
+        if (!longFired && now - pressStart >= ENC_HOLD_MIN_MS) {
             longFired = true;
             currentPage = (Page)wrap((int8_t)currentPage + 1, NUM_PAGES);
             oledDirty = true;
@@ -1156,8 +1248,8 @@ static void handleEncoder() {
     // Release edge — register a short tap for the tap-window logic
     if (!pushed && prev) {
         uint32_t held = now - pressStart;
-        if (held < TAP_MAX_MS && !longFired && !saveFired) {
-            if (now - firstTapAt > TAP_WIN_MS) {
+        if (held < ENC_TAP_MAX_MS && !longFired && !saveFired) {
+            if (now - firstTapAt > CFG_TAP_WINDOW) {
                 pendingTaps = 1;
                 firstTapAt  = now;
             } else {
@@ -1167,7 +1259,7 @@ static void handleEncoder() {
     }
 
     // Tap window expired — flush pending taps
-    if (pendingTaps > 0 && now - firstTapAt > TAP_WIN_MS) {
+    if (pendingTaps > 0 && now - firstTapAt > CFG_TAP_WINDOW) {
         if (pendingTaps >= CFG_TAP_COUNT) {
             configMode ? exitConfigMode() : enterConfigMode();
         } else if (!configMode) {
@@ -1218,6 +1310,15 @@ static void handleEncoder() {
 // ─── Sensor poll ─────────────────────────────────────────────────────────────
 
 static void pollSensor() {
+    // Rate-limit the I²C dataReady poll to the sensor's own measurement
+    // period. checkForDataReady() returned false ~99% of the time when
+    // called every loop iteration — that's a hot-path I²C transaction
+    // saved for nothing.
+    static uint32_t tNextPoll = 0;
+    uint32_t now = millis();
+    if ((int32_t)(now - tNextPoll) < 0) return;
+    tNextPoll = now + POLL_MS;
+
     if (!sensor.checkForDataReady()) return;
     int16_t dist = -1;
     if (sensor.getRangeStatus() == 0) dist = sensor.getDistance();
@@ -1234,7 +1335,7 @@ static void pollSensor() {
         liveDist = cc;
         if (cc != prevDist) { prevDist = cc; sendCC(ccDist, cc); }
     } else {
-        int16_t b = constrain((int16_t)lroundf(curved * 16383.0f), (int16_t)0, (int16_t)16383);
+        int16_t b = (int16_t)constrain((int)lroundf(curved * 16383.0f), 0, 16383);
         liveBend = b;
         liveDist = b / (16383 / 127);
         if (b != prevBend) { prevBend = b; sendPB(b); }
@@ -1251,10 +1352,33 @@ static void pollSensor() {
 
 void setup() {
     Serial.begin(115200);
-    delay(2000);
 #if DEBUG
+    delay(BOOT_SERIAL_WAIT_MS);          // give the host time to attach the serial monitor
     Serial.println("\n[boot] tof_midi_v5");
 #endif
+
+    // CLAUDE.md D1 — factory reset gesture. Hold ENC_PUSH for 5+ s at boot
+    // and the NVS namespace is cleared. Runs BEFORE loadSettings() so we
+    // don't load values we're about to erase. No OLED yet (not initialised),
+    // so the user holds blind; the auto-reboot is the confirmation.
+    pinMode(ENC_PUSH, INPUT_PULLUP);
+    if (digitalRead(ENC_PUSH) == LOW) {
+        uint32_t t0 = millis();
+        while (digitalRead(ENC_PUSH) == LOW && millis() - t0 < 5000) {
+            delay(20);
+        }
+        if (millis() - t0 >= 5000) {
+            Preferences p;
+            p.begin("midi_guitar", false);
+            p.clear();
+            p.end();
+#if DEBUG
+            Serial.println("[boot] FACTORY RESET — NVS cleared, rebooting");
+#endif
+            delay(300);
+            ESP.restart();
+        }
+    }
 
     loadSettings();
     refreshPresetsExist();
@@ -1312,6 +1436,8 @@ void setup() {
 #endif
     if (!sensorOK) showToast("NO SENSOR");
 
+    drawBootBadges(oledOK, i2cFound, sensorOK);
+
     // Bumped to 10s — WiFi init can stall longer than 5s on first boot
     const esp_task_wdt_config_t wdtCfg = {
         .timeout_ms     = 10000,
@@ -1331,53 +1457,60 @@ void setup() {
 
 void loop() {
     esp_task_wdt_reset();
+    const uint32_t now = millis();   // cache once — every read below uses this
 
-    // TEMP — log raw encoder pin states + accumulated delta every 200 ms
-    // so we can diagnose direction-only issues. Remove once fixed.
-    static uint32_t tDbg = 0;
+#if DEBUG
+    // Encoder pin-state diagnostic. Kept behind DEBUG so production builds
+    // don't pay the 200 ms Serial.printf cost. Originally added to track
+    // down a direction-only issue; can be deleted once that's verified gone.
+    static uint32_t tDbg    = 0;
     static int32_t  netDelta = 0;
-    if (millis() - tDbg > 200) {
-        tDbg = millis();
+    if (now - tDbg > 200) {
+        tDbg = now;
         Serial.printf("[enc] A=%d B=%d push=%d  net=%ld  page=%u\n",
                       digitalRead(ENC_A), digitalRead(ENC_B),
                       digitalRead(ENC_PUSH),
                       (long)netDelta, (unsigned)currentPage);
     }
-    netDelta += encDelta;  // peek before handleEncoder consumes it
+    netDelta += encDelta;   // best-effort peek — race with ISR is harmless for debug
+#endif
 
-    bool encMoved = (encDelta != 0);
+    const bool encMoved = (encDelta != 0);
 
     handleEncoder();
     if (currentPage != PG_SETTINGS && settingsEditing) settingsEditing = false;
 
     if (sensorOK) pollSensor();
 
-    if (millis() - tPoll >= POLL_MS) {
-        tPoll = millis();
+    if (now - tPoll >= POLL_MS) {
+        tPoll = now;
         updateRing();
-        if (currentPage == PG_LIVE && sensorOK) oledDirty = true;
-        if (currentPage == PG_SETTINGS && settingsEditing) oledDirty = true;
-        if (configMode) oledDirty = true;
+        if (currentPage == PG_LIVE && sensorOK)              oledDirty = true;
+        if (currentPage == PG_SETTINGS && settingsEditing)   oledDirty = true;
+        if (configMode)                                       oledDirty = true;
     }
 
-    if (encMoved || digitalRead(ENC_PUSH) == LOW || liveVel > 5) {
-        lastActivity = millis();
+    if (encMoved || digitalRead(ENC_PUSH) == LOW || liveVel > LIVE_VEL_THRESH) {
+        lastActivity = now;
         if (oledAsleep) { oledAsleep = false; oledDirty = true; }
     }
 
-    if (settingsDirty && millis() - dirtyTime > 2000) saveSettings();
+    if (settingsDirty && now - dirtyTime > NVS_SAVE_DEBOUNCE_MS) saveSettings();
 
-    if (toastText && millis() < toastUntil) oledDirty = true;
+    if (toastText) {
+        if (now < toastUntil) oledDirty = true;
+        else                  toastText = nullptr;    // drop stale literal pointer
+    }
 
-    // Disable screensaver during config mode
-    if (!configMode && !oledAsleep && millis() - lastActivity > 60000) {
+    // No screensaver while in config mode — the user is actively reading it.
+    if (!configMode && !oledAsleep && now - lastActivity > OLED_SLEEP_MS) {
         oledAsleep = true;
         oled.clearDisplay();
         oled.display();
     }
 
-    if (!oledAsleep && oledDirty && millis() - tOled >= 66) {
-        tOled = millis();
+    if (!oledAsleep && oledDirty && now - tOled >= OLED_REFRESH_MS) {
+        tOled = now;
         refreshOLED();
     }
 }
