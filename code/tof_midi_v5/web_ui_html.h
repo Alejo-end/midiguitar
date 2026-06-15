@@ -1,5 +1,5 @@
 // Auto-generated from web_ui.html by tools/build_web_ui.sh.
-// PROGMEM keeps the page in flash so heap stays free for WiFi+BLE.
+// PROGMEM keeps the page in flash so heap stays free for WiFi.
 // Do not edit by hand — re-run the script after changing web_ui.html.
 
 #pragma once
@@ -71,10 +71,6 @@ footer{text-align:center;font:10px ui-monospace,Menlo,monospace;color:#444;paddi
 <div class="psa"><button class="psbtn" id="pLoad">LOAD</button><button class="psbtn save" id="pSave">SAVE</button></div>
 </div></div>
 
-<div class="card"><div class="hd">OUTPUT</div><div class="body"><div class="seg" id="sTr">
-<button data-v="0">USB</button><button data-v="1">BLE</button><button data-v="2">BOTH</button>
-</div></div></div>
-
 <div class="card"><div class="hd">MODE</div><div class="body"><div class="seg" id="sMd">
 <button data-v="0">CC</button><button data-v="1">BEND</button>
 </div></div></div>
@@ -101,8 +97,7 @@ footer{text-align:center;font:10px ui-monospace,Menlo,monospace;color:#444;paddi
 
 <script>
 const $=(i)=>document.getElementById(i);
-const TR=['USB','BLE','BOTH'];
-let st={tr:0};
+let st={};
 const post=(k,v)=>fetch('/api/set?k='+k+'&v='+encodeURIComponent(v));
 function setSeg(id,v){[...$(id).children].forEach(b=>b.classList.toggle('on',+b.dataset.v===+v));}
 function bSeg(id,k){[...$(id).children].forEach(b=>b.onclick=()=>{setSeg(id,b.dataset.v);st[k]=+b.dataset.v;post(k,b.dataset.v);});}
@@ -120,7 +115,7 @@ async function load(){
  $('ch').value=st.ch;$('ccd').value=st.ccd;$('ccv').value=st.ccv;
  $('dmin').value=st.dmin;$('dmax').value=st.dmax;$('cv').value=st.cv;
  $('brt').value=st.brt;$('inv').classList.toggle('on',!!st.inv);
- setSeg('sTr',st.tr);setSeg('sMd',st.md);$('ip').textContent=location.host||'192.168.4.1';
+ setSeg('sMd',st.md);$('ip').textContent=location.host||'192.168.4.1';
  paintPresets();}catch(e){}
 }
 async function tick(){
@@ -129,10 +124,10 @@ async function tick(){
  $('vD').textContent=j.d;$('vV').textContent=j.v;
  $('vM').textContent=j.mm+' mm';$('vB').textContent=j.b;
  $('dot').classList.toggle('on',!!j.c);
- const o=$('bOut');o.textContent=j.bp?'MUTE':TR[st.tr]||'USB';
+ const o=$('bOut');o.textContent=j.bp?'MUTE':'NOW';
  o.classList.toggle('mute',!!j.bp);}catch(e){}
 }
-bSeg('sTr','tr');bSeg('sMd','md');
+bSeg('sMd','md');
 bNum('ch','ch');bNum('ccd','ccd');bNum('ccv','ccv');
 bNum('dmin','dmin');bNum('dmax','dmax');bNum('cv','cv');
 bRng('brt','brt');bTgl('inv','inv');

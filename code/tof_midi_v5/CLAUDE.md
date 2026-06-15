@@ -182,6 +182,74 @@ On the live page, hold the encoder + tap edit → enters learn mode for next
 gesture. Move the hand → captures min/max range automatically. Current
 manual `distMinMm` / `distMaxMm` calibration is annoying.
 
+**B5. v6 — ESP-NOW transport + CV/MIDI receiver dongle [L]**
+Replace BLE-MIDI with an ESP-NOW link to a dedicated receiver dongle. The
+dongle is a Heat-project BOM derivative (strip the MLX90640 thermal cam and
+the ST7789 IPS display, keep the rest) that terminates ESP-NOW packets as
+**class-compliant USB-MIDI to a host** plus **4 channels of CV / expression**
+via an MCP4728 quad 12-bit DAC into 3.5 mm TRS jacks. Net effect: the guitar
+drives Eurorack / Moog Mother-32 / pedals directly with no laptop in the
+audio path, and one-way latency drops to ~2–4 ms (vs. ~7–15 ms BLE-MIDI with
+jitter spikes).
+
+The dongle also carries a local **VL53L5CX 8×8 multizone ToF** for a
+floor/amp-mounted gesture pad — second expressive zone alongside the guitar
+neck's sensor, both fused into the same MIDI/CV output stream.
+
+Firmware split (both live alongside `tof_midi_v5/` in the `code/` directory):
+- **Guitar (`tof_midi_v6_tx/tof_midi_v6_tx.ino`):** *not yet written.* Strip
+  `bleSend()` + BLE init from v5; add ESP-NOW send with the 5-byte packet
+  format defined below. Keep USB-MIDI as the tethered fallback.
+- **Dongle (`tof_midi_v6_rx/tof_midi_v6_rx.ino`):** *initial cut landed.*
+  ESP-NOW recv callback → ring buffer → USB-MIDI write. SSD1306 page UI for
+  link diagnostics (LIVE = last msg + pps + age, INFO = self/peer MAC +
+  counters + heap, encoder long-press = page, tap on INFO = reset counters).
+  No DAC or local sensor yet — those are PRs 3 and 4. VL53L5CX poll, when
+  added, must run on a separate task pinned to core 0 (same pattern as
+  `webTask` in v5).
+
+Wire-format contract (both ends must agree, byte-identical):
+```
+struct __attribute__((packed)) EspNowMidiPacket {
+    uint8_t magic;    // 0xCB sync byte — rejects RF noise of the right length
+    uint8_t seq;      // rolling u8, lets RX count drops via gaps
+    uint8_t status;   // MIDI status byte (cmd nibble | channel nibble)
+    uint8_t data1;
+    uint8_t data2;
+};  // sizeof() == 5
+```
+Both ends pin to **WiFi channel 1** for ESP-NOW. If the guitar later enters
+WiFi config mode on a different channel, ESP-NOW link drops until both ends
+agree again — this is the open coexistence question, deliberately punted.
+
+Open questions to resolve before starting:
+- ESP-NOW channel pinning vs. WiFi config mode — lock both to one channel,
+  or pause ESP-NOW while config mode is up
+- Pairing model: hardcoded MAC vs. pair-on-button-hold
+- Confirm Heat's existing op-amp scaling stage actually outputs 0–5 V CV;
+  otherwise add one to the dongle KiCad
+- Rip BLE out entirely vs. keep it behind a build flag during transition
+
+Inventory check (everything but extra TRS jacks is already on hand):
+MCP4728 ✓, VL53L5CX ✓, XIAO ESP32-S3 Plus ✓, SSD1306 (from guitar build) ✓,
+EC11 encoder ✓, passives ✓, enclosure stock ✓. Need 3 additional
+Switchcraft 35RAPC2AV jacks to populate all 4 CV outputs.
+
+Slicing into reviewable PRs:
+1. ESP-NOW TX on guitar, parallel to existing BLE, behind a runtime toggle
+   on `PG_SETTINGS` [M]
+2. Dongle firmware: ESP-NOW RX → USB-MIDI passthrough, minimal UI [M]
+3. MCP4728 driver + CV channel mapping settings page on the dongle [M]
+4. VL53L5CX on the dongle + sensor fusion into the MIDI/CV stream [M]
+5. Strip BLE from guitar firmware, finalize v6 [S]
+
+Constraints from §2 still apply: ESP-NOW receive callbacks must not block
+core 1 on the dongle; the 20 ms loop budget on the guitar is unchanged.
+Once v6 ships and BLE is removed, §6's note about the BLE-MIDI timestamp
+gymnastics becomes obsolete — delete it then. §2.2's WiFi+BLE coexistence
+rule is superseded by a new WiFi+ESP-NOW coexistence rule (same channel,
+or one at a time); update §2.2 as part of PR 1.
+
 ### Phase C — networking
 
 **C1. mDNS [S]**

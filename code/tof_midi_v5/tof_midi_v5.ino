@@ -44,7 +44,13 @@
 #define I2C_SCL         6     // XIAO D5 → J1 sensor SCL, J4 OLED SCL
 #define I2C_FREQ        400000  // matches debug_oled.ino which works on this board
 
-#define BLE_NAME        "MidiGuitar"
+// ESP-NOW link to the v6 receiver dongle. The guitar broadcasts its MIDI on a
+// fixed channel; the dongle listens (../tof_midi_v6_rx). No pairing — broadcast
+// sidesteps MAC bookkeeping and the dongle accepts any sender with the right
+// magic byte. Channel must match the dongle's (both pin channel 1). ESP-NOW TX
+// is suspended while WiFi config mode is up, and restored on exit.
+#define ESPNOW_CHANNEL  1
+#define ESPNOW_MAGIC    0xCB
 #define VL53_ADDR       0x29   // VL53L1X power-on default; no XSHUT remap on this board
 #define POLL_MS         20
 #define EMA_ALPHA       0.2f
@@ -63,7 +69,7 @@
 #define OLED_W          128
 #define OLED_H          64
 #define OLED_ADDR       0x3C
-#define NUM_PAGES       5
+#define NUM_PAGES       4
 #define DEBOUNCE_MS     180
 
 // Loop tunables
@@ -122,11 +128,10 @@ static bool     distInvert  = false;
 #include <Adafruit_SSD1306.h>
 #include <esp_task_wdt.h>
 #include <Preferences.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 #include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <esp_mac.h>      // esp_read_mac() + ESP_MAC_WIFI_STA — core 3.x moved these here
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include "web_ui_html.h"
@@ -134,8 +139,7 @@ static bool     distInvert  = false;
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 enum Mode      : uint8_t { MODE_CC, MODE_PB, MODE_COUNT };
-enum Transport : uint8_t { TR_USB, TR_BLE, TR_BOTH, TR_COUNT };
-enum Page      : uint8_t { PG_LIVE, PG_TRANSPORT, PG_MODE, PG_SETTINGS, PG_PRESETS };
+enum Page      : uint8_t { PG_LIVE, PG_MODE, PG_SETTINGS, PG_PRESETS };
 
 // Settings table types — declared up here so Arduino's auto-generated function
 // prototypes (inserted near the top of the .ino) can see them. The actual
@@ -152,22 +156,27 @@ struct Setting {
     void      (*onChange)();
 };
 
-// ─── BLE MIDI ────────────────────────────────────────────────────────────────
-
-#define BLE_MIDI_SVC "03B80E5A-EDE8-4B33-A751-6CE34EC4C700"
-#define BLE_MIDI_CHR "7772E5DB-3868-4112-A1A9-F2669D106BF3"
-
-static bool bleConnected = false;
-static bool bleInitDone  = false;
-static unsigned long bleFlashUntil = 0;
-static unsigned long wipeUntil     = 0;
-static uint32_t      wipeColor     = 0;
-
-class MidiCB : public BLEServerCallbacks {
-    void onConnect(BLEServer *)    override { bleConnected = true; bleFlashUntil = millis() + 200; }
-    void onDisconnect(BLEServer *) override { bleConnected = false; BLEDevice::startAdvertising(); }
+// ─── ESP-NOW MIDI link ───────────────────────────────────────────────────────
+// Fixed 5-byte packet, byte-identical with the v6 receiver
+// (../tof_midi_v6_rx/tof_midi_v6_rx.ino). magic rejects RF garbage; seq lets the
+// RX count drops. Keep __attribute__((packed)) or the two ends disagree on
+// offsets. The static_assert catches an accidental padding bump.
+struct __attribute__((packed)) EspNowMidiPacket {
+    uint8_t magic;    // 0xCB sync byte
+    uint8_t seq;      // rolling sequence for drop detection
+    uint8_t status;   // MIDI status byte (cmd nibble | channel nibble)
+    uint8_t data1;
+    uint8_t data2;
 };
-static MidiCB midiCB;
+static_assert(sizeof(EspNowMidiPacket) == 5,
+              "EspNowMidiPacket must stay 5 bytes — packed struct broke");
+
+static const uint8_t ESPNOW_BCAST[6] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+static bool          espNowReady = false;
+static uint8_t       espNowSeq   = 0;
+
+static unsigned long wipeUntil   = 0;   // ring "wipe" animation on mode change
+static uint32_t      wipeColor   = 0;
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
 
@@ -175,7 +184,6 @@ static USBMIDI           usbMidi;
 static SFEVL53L1X        sensor;
 static Adafruit_NeoPixel ring(NUM_PIXELS, STRIP_PIN, NEO_GRB + NEO_KHZ800);
 static Adafruit_SSD1306  oled(OLED_W, OLED_H, &Wire);
-static BLECharacteristic *bleChr = nullptr;
 static Preferences       prefs;
 
 // WiFi config mode state.
@@ -201,7 +209,6 @@ static int8_t  presetCursor    = 0;
 static uint8_t presetsExistMask = 0;
 static unsigned long dirtyTime = 0;
 
-static Transport transport = TR_USB;
 static Mode      mode      = MODE_CC;
 static bool      bypassed  = false;
 static bool      sensorOK  = false;
@@ -277,34 +284,29 @@ static uint8_t wrap(int8_t v, uint8_t n) {
     return v;
 }
 
-static bool wantsUSB() { return transport == TR_USB || transport == TR_BOTH; }
-static bool wantsBLE() { return transport == TR_BLE || transport == TR_BOTH; }
-
-// ─── BLE send ────────────────────────────────────────────────────────────────
-
-static void bleSend(uint8_t st, uint8_t d1, uint8_t d2) {
-    if (!bleConnected || !bleChr) return;
-    uint16_t ts = millis() & 0x1FFF;
-    uint8_t p[5] = {
-        (uint8_t)(0x80 | (ts >> 7)), (uint8_t)(0x80 | (ts & 0x7F)),
-        st, d1, d2
-    };
-    bleChr->setValue(p, 5);
-    bleChr->notify();
+// ─── ESP-NOW send ────────────────────────────────────────────────────────────
+// Broadcast one 5-byte MIDI packet to the dongle. Connectionless: if no dongle
+// is listening the frame is simply unacked — no blocking, no error to handle.
+static void espNowSend(uint8_t st, uint8_t d1, uint8_t d2) {
+    if (!espNowReady) return;
+    EspNowMidiPacket p = { ESPNOW_MAGIC, espNowSeq++, st, d1, d2 };
+    esp_now_send(ESPNOW_BCAST, (const uint8_t *)&p, sizeof(p));
 }
 
 // ─── MIDI output ─────────────────────────────────────────────────────────────
-
+// Transport is no longer user-selectable: every message goes out BOTH USB
+// (consumed only when a host is plugged in; harmlessly dropped otherwise) AND
+// ESP-NOW (to the v6 dongle). No BLE, no mode toggle.
 static void sendCC(uint8_t cc, uint8_t val) {
     if (bypassed) return;
-    if (wantsUSB()) usbMidi.controlChange(cc, val, midiCh);
-    if (wantsBLE()) bleSend(0xB0 | (midiCh - 1), cc, val);
+    usbMidi.controlChange(cc, val, midiCh);
+    espNowSend(0xB0 | (midiCh - 1), cc, val);
 }
 
 static void sendPB(uint16_t bend) {
     if (bypassed) return;
-    if (wantsUSB()) usbMidi.pitchBend(bend, midiCh);
-    if (wantsBLE()) bleSend(0xE0 | (midiCh - 1), bend & 0x7F, (bend >> 7) & 0x7F);
+    usbMidi.pitchBend(bend, midiCh);
+    espNowSend(0xE0 | (midiCh - 1), bend & 0x7F, (bend >> 7) & 0x7F);
 }
 
 // ─── Sensor init ─────────────────────────────────────────────────────────────
@@ -323,26 +325,35 @@ static bool initSensor() {
     return true;
 }
 
-// ─── BLE init ────────────────────────────────────────────────────────────────
+// ─── ESP-NOW init ────────────────────────────────────────────────────────────
+// Safe to call more than once — exitConfigMode() re-runs it to restore the link
+// after WiFi was flipped to AP for the config web UI. Pins the STA interface to
+// ESPNOW_CHANNEL and registers a broadcast peer so esp_now_send() has a target.
+static void initEspNow() {
+    // No esp_now_deinit() here — calling it before WiFi/ESP-NOW is initialized
+    // (i.e. at first boot) dereferences an uninitialized internal pointer and
+    // panics. Teardown for the re-init path lives in enterConfigMode(), where
+    // ESP-NOW is actually live. So this only ever does a clean fresh init.
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();              // enable the radio without associating to an AP
+    esp_wifi_set_promiscuous(true);
+    esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_promiscuous(false);
 
-static void initBLE() {
-    if (bleInitDone) return;
-    BLEDevice::init(BLE_NAME);
-    BLEServer *srv = BLEDevice::createServer();
-    srv->setCallbacks(&midiCB);
-    BLEService *svc = srv->createService(BLE_MIDI_SVC);
-    bleChr = svc->createCharacteristic(BLE_MIDI_CHR,
-        BLECharacteristic::PROPERTY_READ |
-        BLECharacteristic::PROPERTY_NOTIFY |
-        BLECharacteristic::PROPERTY_WRITE_NR);
-    bleChr->addDescriptor(new BLE2902());
-    svc->start();
-    BLEAdvertising *adv = BLEDevice::getAdvertising();
-    adv->addServiceUUID(BLE_MIDI_SVC);
-    adv->setScanResponse(true);
-    adv->setMinPreferred(0x06);
-    adv->start();
-    bleInitDone = true;
+    if (esp_now_init() != ESP_OK) { espNowReady = false; return; }
+
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, ESPNOW_BCAST, 6);
+    peer.channel = ESPNOW_CHANNEL;
+    peer.ifidx   = WIFI_IF_STA;
+    peer.encrypt = false;
+    esp_now_add_peer(&peer);
+
+    // Full TX power for best range. Config mode clamps it to 8.5 dBm to save
+    // heap; restoring it here (not just at boot) keeps the boot and config-exit
+    // paths symmetric so the link doesn't stay weak after a config session.
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    espNowReady = true;
 }
 
 // ─── Settings table ─────────────────────────────────────────────────────────
@@ -459,7 +470,6 @@ static size_t settingsFromBytes(const uint8_t *buf, size_t len) {
 // — keep them in sync by hand.
 //
 // Forward decls: implementations live further down (Actions / Presets).
-static bool setTransport(Transport newT);
 static bool setMode(Mode newM);
 static bool savePresetTo(uint8_t slot);
 static bool loadPresetFrom(uint8_t slot);
@@ -477,8 +487,8 @@ static void handleApiState() {
                         SETTINGS[i].jsonKey, (long)settingGet(SETTINGS[i]));
     }
     off += snprintf(buf + off, sizeof(buf) - off,
-                    "\"tr\":%u,\"md\":%u,\"pe\":%u}",
-                    (uint8_t)transport, (uint8_t)mode, presetsExistMask);
+                    "\"md\":%u,\"pe\":%u}",
+                    (uint8_t)mode, presetsExistMask);
     webServer.send(200, "application/json", buf);
 }
 
@@ -488,7 +498,7 @@ static void handleApiLive() {
         "{\"d\":%d,\"v\":%d,\"b\":%d,\"mm\":%d,\"c\":%u,\"bp\":%u}",
         liveDist, liveVel, liveBend,
         (int)(ema >= 0 ? ema : 0),
-        bleConnected ? 1u : 0u, bypassed ? 1u : 0u);
+        espNowReady ? 1u : 0u, bypassed ? 1u : 0u);
     webServer.send(200, "application/json", buf);
 }
 
@@ -500,8 +510,7 @@ static void handleApiSet() {
     long v = webServer.arg("v").toInt();
     bool changed = false, persists = true;
 
-    if      (k == "tr") changed = setTransport((Transport)constrain((int)v, 0, (int)TR_COUNT - 1));
-    else if (k == "md") changed = setMode((Mode)constrain((int)v, 0, (int)MODE_COUNT - 1));
+    if      (k == "md") changed = setMode((Mode)constrain((int)v, 0, (int)MODE_COUNT - 1));
     else {
         const Setting *s = settingByKey(k.c_str());
         if (!s) { webServer.send(400, "text/plain", "bad key"); return; }
@@ -557,8 +566,15 @@ static void enterConfigMode() {
     if (configMode) return;
     configMode = true;
 
+    // Tear down ESP-NOW here, while it's still live and WiFi is up (safe), so
+    // the AP switch below is clean and exitConfigMode() can do a fresh init.
+    if (espNowReady) { esp_now_deinit(); espNowReady = false; }
+
     WiFi.mode(WIFI_AP);
-    WiFi.softAP(AP_SSID, AP_PASS);
+    // Pin the AP to the ESP-NOW channel so config mode doesn't move the radio
+    // off it. (ESP-NOW TX is still suspended while in AP mode — it resumes when
+    // exitConfigMode() re-runs initEspNow().)
+    WiFi.softAP(AP_SSID, AP_PASS, ESPNOW_CHANNEL);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);  // save heap
     delay(100);
     IPAddress ip = WiFi.softAPIP();
@@ -602,6 +618,8 @@ static void exitConfigMode() {
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     webTaskH = nullptr;
+    // Config mode took WiFi to AP; bring the ESP-NOW link back up for play mode.
+    initEspNow();
     showToast("CFG OFF");
 #if DEBUG
     Serial.println("Config mode off");
@@ -612,9 +630,7 @@ static void exitConfigMode() {
 
 static uint16_t modeHue() {
     if (configMode) return 21845;  // green during config
-    if (wantsUSB() && !wantsBLE()) return mode == MODE_CC ? 21845 : 49152;
-    if (wantsBLE() && !wantsUSB()) return mode == MODE_CC ? 38229 : 32768;
-    return mode == MODE_CC ? 28000 : 45000;
+    return mode == MODE_CC ? 28000 : 45000;   // CC vs BEND
 }
 
 static void triggerWipe() {
@@ -642,15 +658,6 @@ static void showBreathe() {
     ring.show();
 }
 
-static void showChase() {
-    static uint8_t p = 0;
-    ring.clear();
-    ring.setPixelColor(p % NUM_PIXELS, ring.Color(0, 40, 200));
-    ring.setPixelColor((p + 1) % NUM_PIXELS, ring.Color(0, 15, 80));
-    ring.show();
-    p++;
-}
-
 static void showConfig() {
     uint16_t hue = (millis() / 4) & 0xFFFF;
     float phase = sinf(millis() * TWO_PI / 1500.0f);
@@ -664,9 +671,6 @@ static void showConfig() {
 
 static void updateRing() {
     ring.setBrightness(stripBright);
-    if (millis() < bleFlashUntil) {
-        ring.fill(ring.Color(0, 60, 255)); ring.show(); return;
-    }
     if (millis() < wipeUntil) {
         unsigned long elapsed = 150 - (wipeUntil - millis());
         int n = (int)(elapsed * NUM_PIXELS / 150);
@@ -675,9 +679,8 @@ static void updateRing() {
         ring.show();
         return;
     }
-    if (configMode)            { showConfig();  return; }
-    if (wantsBLE() && !bleConnected && !wantsUSB()) { showChase(); return; }
-    if (bypassed)              { showBreathe(); return; }
+    if (configMode) { showConfig();  return; }
+    if (bypassed)   { showBreathe(); return; }
     showRing(liveDist);
 }
 
@@ -778,16 +781,11 @@ static void drawPageConfig() {
 
 static void drawPageLive() {
     int16_t bx = 0;
-    const char *trLabel = wantsUSB() && wantsBLE() ? "U+B" : wantsUSB() ? "USB" : "BLE";
-    bx += drawBadge(0, 0, trLabel) + 2;
+    // Transport is fixed now: always broadcasting ESP-NOW (+ USB when wired).
+    bx += drawBadge(0, 0, "NOW") + 2;
     bx += drawBadge(bx, 0, mode == MODE_CC ? "CC" : "PB") + 2;
     oled.setCursor(bx, 1);
     oled.printf("Ch%d", midiCh);
-
-    if (wantsBLE()) {
-        if (bleConnected) oled.fillCircle(82, 4, 2, SSD1306_WHITE);
-        else if ((millis() / 300) % 2) oled.drawCircle(82, 4, 2, SSD1306_WHITE);
-    }
 
     if (!sensorOK)      drawBadge(OLED_W - 22, 0, "ERR");
     else if (bypassed)  drawBadge(OLED_W - 28, 0, "MUTE");
@@ -846,14 +844,9 @@ static void drawPageLive() {
     drawPageDots(0, NUM_PAGES);
 }
 
-static void drawPageTransport() {
-    static const char *L[] = { "USB", "BLE", "BOTH" };
-    drawSegmentedPage("OUTPUT", L, TR_COUNT, (uint8_t)transport, 1, 40, 40);
-}
-
 static void drawPageMode() {
     static const char *L[] = { "CC", "BEND" };
-    drawSegmentedPage("MODE", L, MODE_COUNT, (uint8_t)mode, 2, 58, 40);
+    drawSegmentedPage("MODE", L, MODE_COUNT, (uint8_t)mode, 1, 58, 40);
 }
 
 // ─── Settings page (table-driven) ──────────────────────────────────────────
@@ -970,7 +963,7 @@ static void drawPageSettings() {
         oled.drawFastVLine(OLED_W - 1, startY, 50, SSD1306_WHITE);
         oled.fillRect(OLED_W - 2, sbY, 2, sbH, SSD1306_WHITE);
     }
-    drawPageDots(3, NUM_PAGES);
+    drawPageDots(2, NUM_PAGES);
 }
 
 static void drawPagePresets() {
@@ -1011,7 +1004,7 @@ static void drawPagePresets() {
 
     oled.setCursor(0, 54);
     oled.print("TAP load HOLD save");
-    drawPageDots(4, NUM_PAGES);
+    drawPageDots(3, NUM_PAGES);
 }
 
 // ─── NVS ─────────────────────────────────────────────────────────────────────
@@ -1026,8 +1019,6 @@ static void loadSettings() {
             case T_BOOL:             *(bool*)s.slot    = prefs.getBool (s.nvsKey, *(bool*)s.slot); break;
         }
     }
-    uint8_t tr = prefs.getUChar("transport", TR_USB);
-    transport  = (tr < TR_COUNT) ? (Transport)tr : TR_USB;
     uint8_t md = prefs.getUChar("mode", MODE_CC);
     mode       = (md < MODE_COUNT) ? (Mode)md : MODE_CC;
     prefs.end();
@@ -1043,8 +1034,7 @@ static void saveSettings() {
             case T_BOOL:             prefs.putBool (s.nvsKey, *(bool*)s.slot); break;
         }
     }
-    prefs.putUChar("transport", transport);
-    prefs.putUChar("mode",      mode);
+    prefs.putUChar("mode", mode);
     prefs.end();
     settingsDirty = false;
 }
@@ -1057,11 +1047,10 @@ static void refreshOLED() {
         drawPageConfig();
     } else {
         switch (currentPage) {
-            case PG_LIVE:      drawPageLive();      break;
-            case PG_TRANSPORT: drawPageTransport(); break;
-            case PG_MODE:      drawPageMode();      break;
-            case PG_SETTINGS:  drawPageSettings();  break;
-            case PG_PRESETS:   drawPagePresets();   break;
+            case PG_LIVE:     drawPageLive();     break;
+            case PG_MODE:     drawPageMode();     break;
+            case PG_SETTINGS: drawPageSettings(); break;
+            case PG_PRESETS:  drawPagePresets();  break;
         }
     }
     if (toastText && millis() < toastUntil) {
@@ -1158,30 +1147,14 @@ static void drawBootBadges(bool oledOK, uint8_t i2cDev, bool sensorOK) {
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
 // Setters return true iff state actually changed. Shared between the
-// encoder cycle path and the web `/api/set` handler so BLE-init, ring
-// wipe, and live-value resets stay in one place.
-static bool setTransport(Transport newT) {
-    if (newT == transport) return false;
-    transport = newT;
-    if (wantsBLE() && !bleInitDone) initBLE();
-    triggerWipe();
-    return true;
-}
-
+// encoder cycle path and the web `/api/set` handler so the ring wipe and
+// live-value resets stay in one place.
 static bool setMode(Mode newM) {
     if (newM == mode) return false;
     mode = newM;
     prevDist = -1; prevBend = -1; liveDist = 0;
     triggerWipe();
     return true;
-}
-
-static void cycleTransport(int8_t dir) {
-    setTransport((Transport)wrap((int8_t)transport + dir, TR_COUNT));
-    settingsDirty = true;
-    dirtyTime = millis();
-    const char *labels[] = { "USB", "BLE", "BOTH" };
-    showToast(labels[transport]);
 }
 
 static void cycleMode(int8_t dir) {
@@ -1199,7 +1172,7 @@ static void toggleBypass() {
 
 // Encoder push gestures:
 //   short tap (release < 400 ms) — page contextual action
-//                                  (PG_LIVE: bypass, PG_TRANSPORT/MODE: cycle,
+//                                  (PG_LIVE: bypass, PG_MODE: cycle,
 //                                   PG_SETTINGS: toggle edit, PG_PRESETS: load)
 //   long press (held ≥ 600 ms)   — advance to next page
 //   long press on PG_PRESETS     — save preset (≥ 1500 ms)
@@ -1265,11 +1238,10 @@ static void handleEncoder() {
         } else if (!configMode) {
             for (uint8_t i = 0; i < pendingTaps; i++) {
                 switch (currentPage) {
-                    case PG_LIVE:      toggleBypass();                                                       break;
-                    case PG_TRANSPORT: cycleTransport(1);                                                    break;
-                    case PG_MODE:      cycleMode(1);                                                         break;
-                    case PG_SETTINGS:  settingsEditing = !settingsEditing;                                   break;
-                    case PG_PRESETS:   showToast(loadPresetFrom((uint8_t)presetCursor) ? "LOADED" : "EMPTY"); break;
+                    case PG_LIVE:     toggleBypass();                                                       break;
+                    case PG_MODE:     cycleMode(1);                                                         break;
+                    case PG_SETTINGS: settingsEditing = !settingsEditing;                                   break;
+                    case PG_PRESETS:  showToast(loadPresetFrom((uint8_t)presetCursor) ? "LOADED" : "EMPTY"); break;
                     default: break;
                 }
             }
@@ -1293,7 +1265,6 @@ static void handleEncoder() {
             }
             break;
         }
-        case PG_TRANSPORT: cycleTransport(delta > 0 ? 1 : -1); break;
         case PG_MODE:      cycleMode(delta > 0 ? 1 : -1);      break;
         case PG_SETTINGS:
             if (settingsEditing) adjustSetting(settingsCursor, delta > 0 ? 1 : -1);
@@ -1389,7 +1360,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
 
-    // I2C + OLED + NeoPixel come up before USB/BLE so the user sees feedback
+    // I2C + OLED + NeoPixel come up before USB/ESP-NOW so the user sees feedback
     // immediately and the radios can't disturb bus settling.
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ);
     delay(50);
@@ -1425,7 +1396,7 @@ void setup() {
     USB.enableDFU();
     usbMidi.begin();
     USB.begin();
-    if (wantsBLE()) initBLE();
+    initEspNow();   // always-on ESP-NOW broadcast link to the v6 dongle
 
     for (uint8_t attempt = 0; attempt < 3; attempt++) {
         if (initSensor()) { sensorOK = true; break; }
