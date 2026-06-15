@@ -323,8 +323,11 @@ Things that look weird but are weird for a reason:
 
 - **VL53 INT pin is set as `INPUT_PULLUP` but never read.** Trace damage on the
   PCB; polling instead. Don't "clean this up."
-- **`USB.enableDFU()` before `USBMIDI.begin()`.** Order matters on ESP32-S3
-  TinyUSB. Don't reorder.
+- **No `USB.enableDFU()`.** It was removed (v5 + v6_rx): the CDC+DFU+MIDI
+  composite made hosts (macOS / Ableton) enumerate the serial port but skip the
+  MIDI interface, so the device didn't appear as a MIDI input. Plain CDC+MIDI
+  (`usbMidi.begin(); USB.begin();`) enumerates reliably. Don't re-add enableDFU
+  unless you also re-verify the device still shows up in Audio MIDI Setup.
 - **`bleSend()` builds the timestamp manually.** The 13-bit BLE-MIDI timestamp
   format is non-obvious. Don't "simplify" without reading the MIDI BLE spec.
 - **The intro animation runs before WDT init.** Intentional — the animation is

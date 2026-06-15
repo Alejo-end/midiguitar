@@ -104,7 +104,7 @@
 #define DIST_MAX_LO          50
 #define DIST_MAX_HI          2000
 #define CURVE_DEFAULT        CURVE_LINEAR
-#define STRIP_BRIGHT_DEFAULT 40
+#define STRIP_BRIGHT_DEFAULT 76    // ~30% of 255 — ring runs white at this level
 
 // Runtime-adjustable settings
 static uint8_t  midiCh      = MIDI_CH_DEFAULT;
@@ -174,6 +174,10 @@ static_assert(sizeof(EspNowMidiPacket) == 5,
 static const uint8_t ESPNOW_BCAST[6] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 static bool          espNowReady = false;
 static uint8_t       espNowSeq   = 0;
+static uint32_t      espNowTx    = 0;     // TX packet count (debug)
+static int           espNowErr   = 0;     // last esp_now_send() return (debug)
+static uint32_t      sReady      = 0;     // VL53L1X data-ready hits (debug)
+static uint32_t      sValid      = 0;     // VL53L1X valid distance reads (debug)
 
 static unsigned long wipeUntil   = 0;   // ring "wipe" animation on mode change
 static uint32_t      wipeColor   = 0;
@@ -290,7 +294,8 @@ static uint8_t wrap(int8_t v, uint8_t n) {
 static void espNowSend(uint8_t st, uint8_t d1, uint8_t d2) {
     if (!espNowReady) return;
     EspNowMidiPacket p = { ESPNOW_MAGIC, espNowSeq++, st, d1, d2 };
-    esp_now_send(ESPNOW_BCAST, (const uint8_t *)&p, sizeof(p));
+    espNowErr = esp_now_send(ESPNOW_BCAST, (const uint8_t *)&p, sizeof(p));
+    if (espNowErr == ESP_OK) espNowTx++;   // count only real sends so the counter can't lie
 }
 
 // ─── MIDI output ─────────────────────────────────────────────────────────────
@@ -339,15 +344,19 @@ static void initEspNow() {
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(false);
+    // Kill modem sleep so the radio stays awake (set last, see the RX note).
+    WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     if (esp_now_init() != ESP_OK) { espNowReady = false; return; }
 
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, ESPNOW_BCAST, 6);
-    peer.channel = ESPNOW_CHANNEL;
+    peer.channel = 0;              // 0 = use the interface's current channel — robust
+                                   // against any mismatch vs. forcing ESPNOW_CHANNEL
     peer.ifidx   = WIFI_IF_STA;
     peer.encrypt = false;
-    esp_now_add_peer(&peer);
+    if (esp_now_add_peer(&peer) != ESP_OK) { espNowReady = false; return; }   // broadcast needs a peer
 
     // Full TX power for best range. Config mode clamps it to 8.5 dBm to save
     // heap; restoring it here (not just at boot) keeps the boot and config-exit
@@ -634,17 +643,17 @@ static uint16_t modeHue() {
 }
 
 static void triggerWipe() {
-    wipeColor = ring.ColorHSV(modeHue(), 255, 200);
+    wipeColor = ring.Color(200, 200, 200);   // white wipe (scaled by stripBright)
     wipeUntil = millis() + 150;
 }
 
 static void showRing(int16_t val) {
     int n = constrain((val * NUM_PIXELS + 63) / 127, 0, NUM_PIXELS);
-    uint16_t hue = modeHue();
     ring.clear();
     for (int i = 0; i < n; i++) {
+        // White bar with a brightness ramp along its length (was mode-hued).
         uint8_t bright = (n > 1) ? map(i, 0, n - 1, 76, 255) : 255;
-        ring.setPixelColor(i, ring.ColorHSV(hue, 255, bright));
+        ring.setPixelColor(i, ring.Color(bright, bright, bright));
     }
     if (liveVel > 100 && n > 0) ring.setPixelColor(n - 1, ring.Color(255, 255, 255));
     ring.show();
@@ -653,18 +662,19 @@ static void showRing(int16_t val) {
 static void showBreathe() {
     float phase = sinf(millis() * TWO_PI / 2000.0f);
     uint8_t b = 10 + (uint8_t)(30.0f * (1.0f + phase) / 2.0f);
-    uint32_t col = ring.Color(b, b, 0);
+    uint32_t col = ring.Color(b, b, b);   // white breathe (was yellow)
     for (int i = 0; i < NUM_PIXELS; i++) ring.setPixelColor(i, col);
     ring.show();
 }
 
 static void showConfig() {
-    uint16_t hue = (millis() / 4) & 0xFFFF;
-    float phase = sinf(millis() * TWO_PI / 1500.0f);
-    uint8_t b = 30 + (uint8_t)(50.0f * (1.0f + phase) / 2.0f);
+    // Was a rotating rainbow; now a white brightness wave that circles the ring
+    // so config mode is still visibly animated without any color.
+    uint32_t t = millis();
     for (int i = 0; i < NUM_PIXELS; i++) {
-        uint16_t h = hue + (i * 65536 / NUM_PIXELS);
-        ring.setPixelColor(i, ring.ColorHSV(h, 255, b));
+        float w = sinf(t * TWO_PI / 1500.0f + i * TWO_PI / NUM_PIXELS);
+        uint8_t b = 30 + (uint8_t)(60.0f * (1.0f + w) / 2.0f);
+        ring.setPixelColor(i, ring.Color(b, b, b));
     }
     ring.show();
 }
@@ -1291,10 +1301,12 @@ static void pollSensor() {
     tNextPoll = now + POLL_MS;
 
     if (!sensor.checkForDataReady()) return;
+    sReady++;
     int16_t dist = -1;
     if (sensor.getRangeStatus() == 0) dist = sensor.getDistance();
     sensor.clearInterrupt();
     if (dist < 0) return;
+    sValid++;
 
     prevEma = ema;
     updateEma(ema, (float)dist, EMA_ALPHA);
@@ -1393,7 +1405,10 @@ void setup() {
 
     if (oledOK) playIntro();
 
-    USB.enableDFU();
+    // USB-MIDI. No USB.enableDFU() — the extra DFU interface in the composite
+    // (CDC+DFU+MIDI) can make a host enumerate the serial port but skip MIDI, so
+    // the guitar wouldn't appear as a MIDI device when tethered. Clean CDC+MIDI
+    // enumerates everywhere. (Normal serial-bootloader flashing still works.)
     usbMidi.begin();
     USB.begin();
     initEspNow();   // always-on ESP-NOW broadcast link to the v6 dongle
@@ -1431,20 +1446,31 @@ void loop() {
     const uint32_t now = millis();   // cache once — every read below uses this
 
 #if DEBUG
-    // Encoder pin-state diagnostic. Kept behind DEBUG so production builds
-    // don't pay the 200 ms Serial.printf cost. Originally added to track
-    // down a direction-only issue; can be deleted once that's verified gone.
-    static uint32_t tDbg    = 0;
-    static int32_t  netDelta = 0;
-    if (now - tDbg > 200) {
+    // ESP-NOW TX diagnostic. rdy=1: initEspNow OK. tx: successful broadcasts —
+    // climbs ~1/s from the keepalive even idle, faster as the sensor moves.
+    // err: last esp_now_send() return (0=OK). ch: real radio channel (must be 1).
+    // srdy/sval: VL53L1X data-ready vs valid-distance reads — if srdy climbs but
+    // sval doesn't, the sensor ranges but sees no target (nothing in range).
+    static uint32_t tDbg = 0;
+    if (now - tDbg > 500) {
         tDbg = now;
-        Serial.printf("[enc] A=%d B=%d push=%d  net=%ld  page=%u\n",
-                      digitalRead(ENC_A), digitalRead(ENC_B),
-                      digitalRead(ENC_PUSH),
-                      (long)netDelta, (unsigned)currentPage);
+        uint8_t prim = 0; wifi_second_chan_t sec;
+        esp_wifi_get_channel(&prim, &sec);
+        Serial.printf("[now] rdy=%d tx=%lu err=%d ch=%u | sensor=%d srdy=%lu sval=%lu d=%d bypass=%d %s\n",
+                      espNowReady, (unsigned long)espNowTx, espNowErr, (unsigned)prim,
+                      sensorOK, (unsigned long)sReady, (unsigned long)sValid, liveDist,
+                      bypassed, mode == MODE_CC ? "CC" : "PB");
     }
-    netDelta += encDelta;   // best-effort peek — race with ISR is harmless for debug
 #endif
+
+    // ESP-NOW keepalive — 1 Hz MIDI Active Sensing (0xFE). The dongle counts it
+    // (so link reads UP even when the sensor is idle) but doesn't forward it as a
+    // note. Sends regardless of bypass so the link indicator never drops.
+    static uint32_t tKeep = 0;
+    if (espNowReady && now - tKeep >= 250) {   // 4 Hz — link stays UP through a few dropped frames
+        tKeep = now;
+        espNowSend(0xFE, 0, 0);
+    }
 
     const bool encMoved = (encDelta != 0);
 
