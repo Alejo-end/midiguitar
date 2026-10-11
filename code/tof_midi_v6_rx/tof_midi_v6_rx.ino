@@ -60,8 +60,9 @@
 #define ENC_B         8     // D9 → encoder channel B
 #define ENC_PUSH      4     // D3 → encoder pushbutton to GND
 
-// Heat receiver board rev 2026-10: MUTE moved to D1 so the FOOTSWITCH jack (J6,
-// a mono 3.5 mm jack in the case wall, wired in parallel) can reach it; MODE moved to D0. Button S4 is now
+// Heat receiver board rev 2026-10: MUTE moved to D1 so the FOOTSWITCH can reach it (a mono
+// 6.35 mm jack in the case wall, wired through the jack board to J6, in parallel with S4);
+// MODE moved to D0. Button S4 is now
 // MUTE and S3 is MODE (silkscreen matches). tof_midi_v6.ino still uses D0/D1 the
 // old way round.
 #define BTN_MUTE      2     // D1 → MUTE/panic button S4 + footswitch J6 to GND
@@ -69,13 +70,23 @@
 #define BTN_MODE      1     // D0 → MODE button S3 to GND: cycles the sensor source
                             // (BOTH → GUITAR → LOCAL). Also optional; pull-up safe.
 
-// Hardware MIDI OUT on a 5-pin DIN socket in the case wall, wired to pads J5
+// Hardware MIDI OUT on a 5-pin DIN socket (Cliff FM6725) on the jack board, wired to pads J5
 // (DIN 5 = sink via 100 ohm from D6, DIN 4 = source via 100 ohm from 3V3, DIN 2 = GND).
 // Same messages as USB MIDI. At reset the
 // ESP32-S3 ROM prints a short boot log on this pin at 115200 baud; MIDI gear
 // ignores it (wrong speed). Set to 0 to compile it out.
 #define HW_MIDI_OUT   1
 #define MIDI_TX_PIN   43    // D6
+
+// Expression pedal on D2: a stereo 6.35 mm jack in the case wall (tip = wiper, ring = supply,
+// sleeve = GND). The jack board feeds the ring from 3V3 through 200 ohm (a mono plug only
+// shorts that) and filters the wiper with 10k + 100 nF. The internal pull-down holds D2 at
+// 0 V with no pedal. The range is learned: CC 11 stays silent until the pedal has moved over
+// EXP_MIN_SPAN ADC counts since power-up, so an empty jack never sends anything.
+#define EXP_PIN       3     // D2 = GPIO3, ADC1 channel 2 (ADC1 works while ESP-NOW runs)
+#define EXP_CC        11    // CC 11 = expression, sent on LOCAL_CH
+#define EXP_POLL_MS   5
+#define EXP_MIN_SPAN  800   // of 4095 counts: about 20 % of the pedal travel
 
 #define NEOPIXEL_PIN  9     // D10 → level shifter (3.3→5V) → NeoPixel stick DIN
 #define NUM_PIXELS    8     // Heat carries an 8-px stick (v5 used a 16-px ring)
@@ -178,6 +189,7 @@
 #include <esp_wifi.h>
 #include <esp_mac.h>       // esp_read_mac() + ESP_MAC_WIFI_STA — core 3.x moved these here
 #include <math.h>
+#include <driver/gpio.h>   // gpio_pulldown_en() for the expression input
 #include <Preferences.h>   // NVS — persists the paired guitar MAC
 
 // ─── Packet format ───────────────────────────────────────────────────────────
@@ -614,6 +626,43 @@ static void sendLocalSensorMidi() {
     }
 }
 
+// ─── Expression pedal (D2) ───────────────────────────────────────────────────
+static uint8_t expCC   = 0;
+static bool    expLive = false;   // true once the pedal has moved far enough to learn its range
+
+static void initExp() {
+    analogReadResolution(12);
+    analogSetPinAttenuation(EXP_PIN, ADC_11db);
+    (void)analogRead(EXP_PIN);                  // attaches the pin to the ADC first
+    gpio_pullup_dis((gpio_num_t)EXP_PIN);
+    gpio_pulldown_en((gpio_num_t)EXP_PIN);      // an empty jack reads 0 V
+}
+
+static void pollExp(uint32_t now) {
+    static uint32_t tLast = 0;
+    static float    ema   = -1.0f;
+    static float    lo    = 4095.0f, hi = 0.0f;
+    static int16_t  sent  = -1;
+    if ((now - tLast) < EXP_POLL_MS) return;
+    tLast = now;
+    float raw = (float)analogRead(EXP_PIN);
+    ema = (ema < 0.0f) ? raw : ema + 0.2f * (raw - ema);
+    if (ema < lo) lo = ema;
+    if (ema > hi) hi = ema;
+    if (hi - lo < EXP_MIN_SPAN) return;
+    expLive = true;
+    float scaled = (ema - lo) / (hi - lo) * 127.0f;
+    // Hysteresis: move only when the reading is 0.6 steps away from the last value sent.
+    if (sent >= 0 && fabsf(scaled - (float)sent) < 0.6f) return;
+    int16_t v = (int16_t)lroundf(scaled);
+    if (v == sent) return;
+    sent  = v;
+    expCC = (uint8_t)v;
+    if (bypassed) return;
+    usbMidi.controlChange(EXP_CC, expCC, LOCAL_CH);
+    hwMidi3(0xB0 | (LOCAL_CH - 1), EXP_CC, expCC);
+}
+
 // Link-alive test, underflow-safe: a packet landing mid-loop can make lastRxMs
 // briefly newer than `now`, so use a SIGNED delta — negative (just-arrived) and
 // 0..NO_SIGNAL_MS both read as alive; only a real gap reads as dead.
@@ -875,7 +924,8 @@ static void drawPageLive() {
     oled.setCursor(0, 24);
     oled.printf("%lu pps", (unsigned long)lastRatePps);
     oled.setCursor(60, 24);
-    oled.printf("%lu pkt", (unsigned long)pktTotal);
+    if (expLive) oled.printf("EXP %3u", (unsigned)expCC);   // pedal plugged in and moved
+    else         oled.printf("%lu pkt", (unsigned long)pktTotal);
 
     drawHLine(34);
 
@@ -1002,7 +1052,7 @@ static void debugHeartbeat(uint32_t now) {
 
     Serial.printf(
         "[hb] wch=%u %s src=%s link=%s %lupps pkt=%lu drop=%lu frgn=%lu age=%lums | "
-        "rx=%s ch%u %u,%u | tof=%s d=%u v=%u | %s pg=%u heap=%uk\n",
+        "rx=%s ch%u %u,%u | tof=%s d=%u v=%u | exp=%s %u | %s pg=%u heap=%uk\n",
         (unsigned)wch,
         paired ? "PAIRED" : "open",
         SRC_NAME[sensorSrc],
@@ -1015,6 +1065,7 @@ static void debugHeartbeat(uint32_t now) {
         (unsigned)lastData1, (unsigned)lastData2,
         sensorOK ? (tofValid ? "hand" : "idle") : "none",
         (unsigned)distCC, (unsigned)velCC,
+        expLive ? "on" : "off", (unsigned)expCC,
         bypassed ? "MUTE" : "live",
         (unsigned)currentPage,
         (unsigned)(ESP.getFreeHeap() / 1024));
@@ -1034,6 +1085,7 @@ void setup() {
     pinMode(ENC_PUSH, INPUT_PULLUP);
     pinMode(BTN_MUTE, INPUT_PULLUP);
     pinMode(BTN_MODE, INPUT_PULLUP);
+    initExp();
     attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
 
@@ -1143,6 +1195,7 @@ void loop() {
 
     pollToF();
     sendLocalSensorMidi();
+    pollExp(now);
     drainRx();
     updateNeoPixel();
 
