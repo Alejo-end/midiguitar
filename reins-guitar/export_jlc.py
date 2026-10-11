@@ -7,7 +7,8 @@
 #   <board>-gerbers.zip   Gerbers and drill files: upload this as the PCB
 #   <board>-bom.csv       Comment, Designator, Footprint, LCSC: the parts JLCPCB assembles
 #   <board>-cpl.csv       Designator, Mid X, Mid Y, Layer, Rotation: where they go
-# Only footprints with an LCSC field go into the BOM and the CPL. Everything else you solder.
+# Only SMD footprints with an LCSC field go into the BOM and the CPL. You solder the through-hole
+# parts (headers, buttons) yourself: that saves the JLCPCB hand-soldering fee.
 import csv, os, shutil, subprocess, sys, zipfile
 import pcbnew
 
@@ -37,6 +38,8 @@ for board in ("reins-guitar",):
     groups, rows = {}, []
     for fp in b.GetFootprints():
         if not fp.HasField('LCSC') or not fp.GetFieldText('LCSC'):
+            continue
+        if fp.GetAttributes() & pcbnew.FP_THROUGH_HOLE:     # through-hole parts: you solder them
             continue
         lcsc = fp.GetFieldText('LCSC')
         key = (fp.GetValue(), fp.GetFPID().GetLibItemName().wx_str(), lcsc)
