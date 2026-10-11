@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "reins-guitar")(type "KiCad")(uri "${KIPRJMOD}/reins-guitar.kicad_sym")(options "")(descr "REINS guitar symbols"))
+)

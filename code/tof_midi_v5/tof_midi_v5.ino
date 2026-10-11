@@ -60,8 +60,15 @@
 #define CURVE_LOG       1
 #define CURVE_EXP       2
 #define STRIP_PIN       9     // XIAO D10 → U1 level shifter A, then R1 → J3 NeoPixel DIN
-// SW1 (Omron tactile, D2/GPIO3) is unused — GPIO3 reads stuck LOW on this PCB.
-// All button actions are now driven from the encoder push (ENC_PUSH).
+// SW1 and the battery divider exist only on the JLCPCB board (../../reins-guitar).
+// On the milled finalMidiGuitar board SW1 sat on D2 (GPIO3) and read stuck LOW,
+// because its footprint joined both pads to one internal contact. The JLCPCB board
+// moves SW1 to D1 and wires it on diagonal pads. For the milled board set both to -1.
+#define BTN_PIN         2     // XIAO D1 → SW1 to GND: mute toggle on every page (-1 = none)
+#define BAT_PIN         1     // XIAO D0 → R4/R5 divider, half the battery voltage (-1 = none)
+#define BAT_LOW_MV      3450  // "LOW BAT" toast below this; the LED ring dims near 3.4 V
+#define BAT_FULL_MV     4150
+#define BAT_EMPTY_MV    3350
 #define ENC_A           7     // XIAO D8 → S1 encoder channel A
 #define ENC_B           8     // XIAO D9 → S1 encoder channel B
 #define ENC_PUSH        4     // XIAO D3 → S1 encoder pushbutton to GND
@@ -216,6 +223,7 @@ static unsigned long dirtyTime = 0;
 static Mode      mode      = MODE_CC;
 static bool      bypassed  = false;
 static bool      sensorOK  = false;
+static uint16_t  batMv     = 0;       // smoothed battery voltage, 0 = no battery seen
 
 static float   ema      = -1.0f;
 static float   prevEma  = -1.0f;
@@ -796,6 +804,10 @@ static void drawPageLive() {
     bx += drawBadge(bx, 0, mode == MODE_CC ? "CC" : "PB") + 2;
     oled.setCursor(bx, 1);
     oled.printf("Ch%d", midiCh);
+    if (batMv) {                                   // battery charge, between Ch and the badges
+        oled.setCursor(oled.getCursorX() + 4, 1);
+        oled.printf("%d%%", batPercent());
+    }
 
     if (!sensorOK)      drawBadge(OLED_W - 22, 0, "ERR");
     else if (bypassed)  drawBadge(OLED_W - 28, 0, "MUTE");
@@ -1178,6 +1190,42 @@ static void toggleBypass() {
     showToast(bypassed ? "MUTED" : "ACTIVE");
 }
 
+// SW1 on D1: a press toggles mute on any page, like the encoder tap on PG_LIVE.
+static void handleButton(uint32_t now) {
+#if BTN_PIN >= 0
+    static bool     prev   = false;
+    static uint32_t tPress = 0;
+    const bool down = digitalRead(BTN_PIN) == LOW;
+    if (down && !prev && now - tPress > DEBOUNCE_MS) {
+        tPress = now;
+        toggleBypass();
+        lastActivity = now;
+        if (oledAsleep) { oledAsleep = false; oledDirty = true; }
+    }
+    prev = down;
+#endif
+}
+
+// Battery on D0 through a 100k/100k divider. Reads once a second, smoothed.
+// Below 2.5 V there is no battery (switch off or unplugged) and nothing shows.
+static void readBattery(uint32_t now) {
+#if BAT_PIN >= 0
+    static uint32_t tBat   = 0;
+    static bool     warned = false;
+    if (now - tBat < 1000) return;
+    tBat = now;
+    const uint32_t mv = analogReadMilliVolts(BAT_PIN) * 2;
+    if (mv < 2500)     { batMv = 0; return; }
+    batMv = batMv ? (uint16_t)((batMv * 3 + mv) / 4) : (uint16_t)mv;
+    if (!warned && batMv < BAT_LOW_MV) { warned = true; showToast("LOW BAT"); }
+    if (warned && batMv > BAT_LOW_MV + 100) warned = false;
+#endif
+}
+
+static int batPercent() {
+    return constrain(((int)batMv - BAT_EMPTY_MV) * 100 / (BAT_FULL_MV - BAT_EMPTY_MV), 0, 100);
+}
+
 // ─── Encoder + menu ──────────────────────────────────────────────────────────
 
 // Encoder push gestures:
@@ -1369,6 +1417,9 @@ void setup() {
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
     pinMode(ENC_PUSH, INPUT_PULLUP);
+#if BTN_PIN >= 0
+    pinMode(BTN_PIN, INPUT_PULLUP);
+#endif
     attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
 
@@ -1475,6 +1526,8 @@ void loop() {
     const bool encMoved = (encDelta != 0);
 
     handleEncoder();
+    handleButton(now);
+    readBattery(now);
     if (currentPage != PG_SETTINGS && settingsEditing) settingsEditing = false;
 
     if (sensorOK) pollSensor();
