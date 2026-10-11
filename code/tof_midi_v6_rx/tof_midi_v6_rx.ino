@@ -65,8 +65,18 @@
 // MODE moved to D0. Button S4 is now
 // MUTE and S3 is MODE (silkscreen matches). tof_midi_v6.ino still uses D0/D1 the
 // old way round.
-#define BTN_MUTE      2     // D1 → MUTE/panic button S4 + footswitch J6 to GND
+#define BTN_MUTE      2     // D1 → MUTE/panic button S4 + footswitch jack tip to GND
                             // (reads HIGH via pull-up if unpopulated — harmless)
+// FOOT2 / HOLD: D7 = GPIO44, the RING of the footswitch jack on the REINS boards (the tip goes
+// to MUTE on D1). With a two-switch stomp box on a TRS cable, the second switch freezes the local
+// sensor and expression CCs while it is down (HOLD). A MONO footswitch cable shorts the ring to
+// ground, which reads as HOLD all the time: set FOOT2_ENABLE to 0 if you only use mono cables.
+#define FOOT2_PIN     44    // D7
+#define FOOT2_ENABLE  1
+// A latching footswitch (3PDT) stays down after a stomp. MUTE toggles on every press, and also on
+// the release when the switch stayed down longer than this: one stomp = one toggle either way.
+#define MUTE_LATCH_MS 1000
+
 #define BTN_MODE      1     // D0 → MODE button S3 to GND: cycles the sensor source
                             // (BOTH → GUITAR → LOCAL). Also optional; pull-up safe.
 
@@ -303,6 +313,7 @@ static bool          oledOK      = false;   // panel init result; drives the LED
 // Bypass / mute. When set, drainRx() forwards only NoteOff/AllNotesOff (so any
 // in-flight notes can still close on the host) and the local sensor goes silent.
 static bool          bypassed    = false;
+static bool          holding     = false;   // HOLD footswitch (D7) down: local CCs stay frozen
 
 // Toast — same 1 s overlay as v5/v6.
 static const char   *toastText  = nullptr;
@@ -613,7 +624,7 @@ static void sendLocalSensorMidi() {
     static int16_t prevDistCC = -1;
     static int16_t prevVelCC  = -1;
     if (sensorSrc == SRC_GUITAR) return;   // local sensor muted in guitar-only mode
-    if (!tofFresh || bypassed) return;
+    if (!tofFresh || bypassed || holding) return;
     if (distCC != prevDistCC) {
         prevDistCC = distCC;
         usbMidi.controlChange(LOCAL_CC_DIST, distCC, LOCAL_CH);
@@ -655,7 +666,7 @@ static void pollExp(uint32_t now) {
     // Hysteresis: move only when the reading is 0.6 steps away from the last value sent.
     if (sent >= 0 && fabsf(scaled - (float)sent) < 0.6f) return;
     int16_t v = (int16_t)lroundf(scaled);
-    if (v == sent) return;
+    if (v == sent || holding) return;               // HOLD keeps the last value on the bus
     sent  = v;
     expCC = (uint8_t)v;
     if (bypassed) return;
@@ -754,7 +765,25 @@ static bool buttonPressed(uint8_t pin, BtnDebounce &b) {
 
 static void handleMuteButton() {
     static BtnDebounce b;
-    if (buttonPressed(BTN_MUTE, b)) toggleBypass();
+    static uint32_t pressedAt = 0;
+    bool wasPressed = !b.stable;
+    if (buttonPressed(BTN_MUTE, b)) { toggleBypass(); pressedAt = millis(); return; }
+    // Released after a long hold: a latching footswitch was stomped off again.
+    if (wasPressed && b.stable && (millis() - pressedAt) >= MUTE_LATCH_MS) toggleBypass();
+}
+
+// ─── HOLD footswitch (FOOT2, D7) ─────────────────────────────────────────────
+static void handleHoldSwitch() {
+#if FOOT2_ENABLE
+    static BtnDebounce b;
+    buttonPressed(FOOT2_PIN, b);                    // updates b.stable (true = released)
+    bool h = !b.stable;
+    if (h != holding) {
+        holding = h;
+        showToast(holding ? "HOLD" : "FREE");
+        oledDirty = true;
+    }
+#endif
 }
 
 // ─── Sensor-source mode (BTN_MODE) ───────────────────────────────────────────
@@ -908,6 +937,7 @@ static void drawPageLive() {
 
     // Header badge (right-aligned): MUTE (safety-critical) > link state.
     if (bypassed)    drawBadge(OLED_W - 30, 0, "MUTE");
+    else if (holding) drawBadge(OLED_W - 30, 0, "HOLD");
     else if (linkUp) drawBadge(OLED_W - 22, 0, "RX");
     else             drawBadge(OLED_W - 36, 0, "NOSIG");
 
@@ -1085,6 +1115,9 @@ void setup() {
     pinMode(ENC_PUSH, INPUT_PULLUP);
     pinMode(BTN_MUTE, INPUT_PULLUP);
     pinMode(BTN_MODE, INPUT_PULLUP);
+#if FOOT2_ENABLE
+    pinMode(FOOT2_PIN, INPUT_PULLUP);
+#endif
     initExp();
     attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
@@ -1191,6 +1224,7 @@ void loop() {
 
     handleEncoder();
     handleMuteButton();
+    handleHoldSwitch();
     handleModeButton();
 
     pollToF();
