@@ -36,8 +36,8 @@
 // or TX/RX disagree on byte offsets the instant a field's type changes.
 //
 // ─── Scope of THIS file ──────────────────────────────────────────────────────
-// Focused, works-on-first-flash receiver. Mirrors every MIDI message to the TRS
-// MIDI OUT jack (Serial1 on D6). Deliberately omits the untested Heat extras
+// Focused, works-on-first-flash receiver. Mirrors every MIDI message to the 5-pin
+// DIN MIDI OUT socket (Serial1 on D6). Deliberately omits the untested Heat extras
 // (MCP4561 digipot/expression, DRONE/RHYTHM/DRUMS mode router, WiFi web-config,
 // NVS presets) — those live in ../tof_midi_v6/ and can be folded back in once the
 // core link + sensor + OLED are confirmed good.
@@ -61,7 +61,7 @@
 #define ENC_PUSH      4     // D3 → encoder pushbutton to GND
 
 // Heat receiver board rev 2026-10: MUTE moved to D1 so the FOOTSWITCH jack (J6,
-// wired in parallel through 1k) can reach it; MODE moved to D0. Button S4 is now
+// a mono 3.5 mm jack in the case wall, wired in parallel) can reach it; MODE moved to D0. Button S4 is now
 // MUTE and S3 is MODE (silkscreen matches). tof_midi_v6.ino still uses D0/D1 the
 // old way round.
 #define BTN_MUTE      2     // D1 → MUTE/panic button S4 + footswitch J6 to GND
@@ -69,8 +69,9 @@
 #define BTN_MODE      1     // D0 → MODE button S3 to GND: cycles the sensor source
                             // (BOTH → GUITAR → LOCAL). Also optional; pull-up safe.
 
-// Hardware MIDI OUT on the 3.5 mm TRS type A jack J5 (tip = sink via 10 ohm from
-// D6, ring = source via 33 ohm from 3V3). Same messages as USB MIDI. At reset the
+// Hardware MIDI OUT on a 5-pin DIN socket in the case wall, wired to pads J5
+// (DIN 5 = sink via 100 ohm from D6, DIN 4 = source via 100 ohm from 3V3, DIN 2 = GND).
+// Same messages as USB MIDI. At reset the
 // ESP32-S3 ROM prints a short boot log on this pin at 115200 baud; MIDI gear
 // ignores it (wrong speed). Set to 0 to compile it out.
 #define HW_MIDI_OUT   1
@@ -418,8 +419,8 @@ static void doPairToggle() {
     oledDirty = true;
 }
 
-// ─── MIDI forward (ESP-NOW guitar stream → USB + TRS MIDI OUT) ───────────────
-// Raw channel messages to the TRS jack; status carries the 0-based channel.
+// ─── MIDI forward (ESP-NOW guitar stream → USB + DIN MIDI OUT) ───────────────
+// Raw channel messages to the DIN socket; status carries the 0-based channel.
 static inline void hwMidi3(uint8_t status, uint8_t d1, uint8_t d2) {
 #if HW_MIDI_OUT
     uint8_t m[3] = {status, d1, d2};
@@ -1093,7 +1094,7 @@ void setup() {
     usbMidi.begin();
     USB.begin();
 #if HW_MIDI_OUT
-    Serial1.begin(31250, SERIAL_8N1, -1, MIDI_TX_PIN);   // TX only, TRS MIDI OUT (J5)
+    Serial1.begin(31250, SERIAL_8N1, -1, MIDI_TX_PIN);   // TX only, DIN MIDI OUT (J5)
 #endif
 
     // ESP-NOW after USB so a noisy radio start can't disturb USB enumeration.
