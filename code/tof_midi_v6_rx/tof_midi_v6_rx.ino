@@ -36,15 +36,16 @@
 // or TX/RX disagree on byte offsets the instant a field's type changes.
 //
 // ─── Scope of THIS file ──────────────────────────────────────────────────────
-// Focused, works-on-first-flash receiver. Deliberately omits the untested Heat
-// extras (MCP4561 digipot/expression, DIN-MIDI on Serial1, DRONE/RHYTHM/DRUMS
-// mode router, WiFi web-config, NVS presets) — those live in ../tof_midi_v6/ and
-// can be folded back in once the core link + sensor + OLED are confirmed good.
+// Focused, works-on-first-flash receiver. Mirrors every MIDI message to the TRS
+// MIDI OUT jack (Serial1 on D6). Deliberately omits the untested Heat extras
+// (MCP4561 digipot/expression, DRONE/RHYTHM/DRUMS mode router, WiFi web-config,
+// NVS presets) — those live in ../tof_midi_v6/ and can be folded back in once the
+// core link + sensor + OLED are confirmed good.
 
 #define DEBUG 1
 
-// ─── Pin map ─ XIAO ESP32-S3, Heat dongle socket. Matches tof_midi_v6.ino so
-// the firmwares are interchangeable on the same board.
+// ─── Pin map ─ XIAO ESP32-S3, Heat dongle socket. Matches tof_midi_v6.ino
+// except BTN_MUTE / BTN_MODE (swapped, see below).
 // XIAO Dn → GPIO: D0=1 D1=2 D2=3 D3=4 D4=5 D5=6 D6=43 D7=44 D8=7 D9=8 D10=9
 #define I2C_SDA       5     // D4 → VL53L5CX SDA + OLED SDA
 #define I2C_SCL       6     // D5 → VL53L5CX SCL + OLED SCL
@@ -59,10 +60,21 @@
 #define ENC_B         8     // D9 → encoder channel B
 #define ENC_PUSH      4     // D3 → encoder pushbutton to GND
 
-#define BTN_MUTE      1     // D0 → tactile mute/panic button to GND (optional;
-                            // reads HIGH via pull-up if unpopulated — harmless)
-#define BTN_MODE      2     // D1 → tactile button to GND: cycles the sensor source
+// Heat receiver board rev 2026-10: MUTE moved to D1 so the FOOTSWITCH jack (J6,
+// wired in parallel through 1k) can reach it; MODE moved to D0. Button S4 is now
+// MUTE and S3 is MODE (silkscreen matches). tof_midi_v6.ino still uses D0/D1 the
+// old way round.
+#define BTN_MUTE      2     // D1 → MUTE/panic button S4 + footswitch J6 to GND
+                            // (reads HIGH via pull-up if unpopulated — harmless)
+#define BTN_MODE      1     // D0 → MODE button S3 to GND: cycles the sensor source
                             // (BOTH → GUITAR → LOCAL). Also optional; pull-up safe.
+
+// Hardware MIDI OUT on the 3.5 mm TRS type A jack J5 (tip = sink via 10 ohm from
+// D6, ring = source via 33 ohm from 3V3). Same messages as USB MIDI. At reset the
+// ESP32-S3 ROM prints a short boot log on this pin at 115200 baud; MIDI gear
+// ignores it (wrong speed). Set to 0 to compile it out.
+#define HW_MIDI_OUT   1
+#define MIDI_TX_PIN   43    // D6
 
 #define NEOPIXEL_PIN  9     // D10 → level shifter (3.3→5V) → NeoPixel stick DIN
 #define NUM_PIXELS    8     // Heat carries an 8-px stick (v5 used a 16-px ring)
@@ -406,11 +418,27 @@ static void doPairToggle() {
     oledDirty = true;
 }
 
-// ─── MIDI forward (ESP-NOW guitar stream → USB) ──────────────────────────────
+// ─── MIDI forward (ESP-NOW guitar stream → USB + TRS MIDI OUT) ───────────────
+// Raw channel messages to the TRS jack; status carries the 0-based channel.
+static inline void hwMidi3(uint8_t status, uint8_t d1, uint8_t d2) {
+#if HW_MIDI_OUT
+    uint8_t m[3] = {status, d1, d2};
+    Serial1.write(m, 3);
+#endif
+}
+static inline void hwMidi2(uint8_t status, uint8_t d1) {
+#if HW_MIDI_OUT
+    uint8_t m[2] = {status, d1};
+    Serial1.write(m, 2);
+#endif
+}
+
 static void allNotesOffAllChannels() {
     for (uint8_t ch = 1; ch <= 16; ch++) {
         usbMidi.controlChange(123, 0, ch);   // All Notes Off
         usbMidi.controlChange(120, 0, ch);   // All Sound Off (belt + suspenders)
+        hwMidi3(0xB0 | (ch - 1), 123, 0);
+        hwMidi3(0xB0 | (ch - 1), 120, 0);
     }
 }
 
@@ -457,6 +485,13 @@ static void drainRx() {
             case 0xE0: usbMidi.pitchBend(
                            (uint16_t)(p.data1 | (p.data2 << 7)), ch); break;
             default: break;   // ignore system/realtime for now
+        }
+        switch (cmd) {
+            case 0x80: case 0x90: case 0xA0: case 0xB0: case 0xE0:
+                hwMidi3(p.status, p.data1, p.data2); break;
+            case 0xC0: case 0xD0:
+                hwMidi2(p.status, p.data1); break;
+            default: break;
         }
     }
 }
@@ -566,8 +601,16 @@ static void sendLocalSensorMidi() {
     static int16_t prevVelCC  = -1;
     if (sensorSrc == SRC_GUITAR) return;   // local sensor muted in guitar-only mode
     if (!tofFresh || bypassed) return;
-    if (distCC != prevDistCC) { prevDistCC = distCC; usbMidi.controlChange(LOCAL_CC_DIST, distCC, LOCAL_CH); }
-    if (velCC  != prevVelCC ) { prevVelCC  = velCC;  usbMidi.controlChange(LOCAL_CC_VEL,  velCC,  LOCAL_CH); }
+    if (distCC != prevDistCC) {
+        prevDistCC = distCC;
+        usbMidi.controlChange(LOCAL_CC_DIST, distCC, LOCAL_CH);
+        hwMidi3(0xB0 | (LOCAL_CH - 1), LOCAL_CC_DIST, distCC);
+    }
+    if (velCC != prevVelCC) {
+        prevVelCC = velCC;
+        usbMidi.controlChange(LOCAL_CC_VEL, velCC, LOCAL_CH);
+        hwMidi3(0xB0 | (LOCAL_CH - 1), LOCAL_CC_VEL, velCC);
+    }
 }
 
 // Link-alive test, underflow-safe: a packet landing mid-loop can make lastRxMs
@@ -1049,6 +1092,9 @@ void setup() {
     // normally over the serial bootloader; you just lose USB-DFU flashing.
     usbMidi.begin();
     USB.begin();
+#if HW_MIDI_OUT
+    Serial1.begin(31250, SERIAL_8N1, -1, MIDI_TX_PIN);   // TX only, TRS MIDI OUT (J5)
+#endif
 
     // ESP-NOW after USB so a noisy radio start can't disturb USB enumeration.
     loadPairing();    // restore the bonded guitar MAC before the recv cb can fire
