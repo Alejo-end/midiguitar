@@ -1,10 +1,49 @@
 # MIDI Guitar
 
-A time-of-flight distance sensor embedded in a Squier Mustang electric guitar, turning hand gestures into MIDI messages for controlling effects in Max/MSP, Ableton, or any MIDI host.
+A gesture-controlled MIDI rig in two pieces:
 
-## How it works
+- **Transmitter — the guitar.** A Squier Mustang with a time-of-flight distance sensor near the pickups. Wave your hand over the body and it streams MIDI.
+- **Receiver — the dongle ("Heat").** A small custom-PCB box that receives the guitar's MIDI wirelessly, re-emits it as class-compliant USB-MIDI for a host, drives hardware synths over DIN/TRS MIDI, and provides a second gesture zone of its own.
 
-Wave your hand over the VL53L1X sensor mounted near the pickups. The firmware converts distance and hand speed into MIDI CC and pitch bend messages, sent over USB or Bluetooth LE. A rotary encoder navigates a 4-page OLED menu; a bypass button mutes output; a DIP switch selects the default transport.
+Together they let you play effects and instruments in Max/MSP, Ableton, a Eurorack, or any MIDI gear — with no laptop required in the signal path.
+
+## System architecture — transmitter + receiver
+
+```
+        GUITAR  (transmitter)                         RECEIVER DONGLE  ("Heat")
+   ┌────────────────────────────┐                ┌─────────────────────────────────┐
+   │ VL53L1X ToF (hand distance)│                │ VL53L5CX 8×8 ToF (2nd zone)     │
+   │ XIAO ESP32-S3 Sense        │   ESP-NOW      │ XIAO ESP32-S3 Plus              │
+   │ OLED · NeoPixel ring · enc │   2.4 GHz      │ OLED · NeoPixel stick · enc     │
+   │                            │   5-byte pkt   │                                 │
+   │ USB-MIDI · BLE-MIDI        │──── ~2–4 ms ──▶│ USB-MIDI ───────────▶ host      │
+   │ (ESP-NOW TX — planned)     │                │ DIN + TRS MIDI ─────▶ synths    │
+   └────────────────────────────┘                │ MCP4561 digipot ────▶ EXP pedal │
+                                                  └─────────────────────────────────┘
+```
+
+The two halves talk over **ESP-NOW** — a connectionless 2.4 GHz Espressif protocol with no pairing dance and no BLE-GATT timestamp gymnastics. One-way latency is ~2–4 ms (vs. ~7–15 ms with jitter for BLE-MIDI). Both ends pin to **WiFi channel 1** and exchange a fixed **5-byte packet**:
+
+```
+magic (0xCB) | seq | status | data1 | data2     // __attribute__((packed)), sizeof == 5
+```
+
+`magic` rejects RF noise of the right length; `seq` is a rolling counter so the receiver can detect dropped packets via gaps. There is **no Bluetooth on the receiver** — it was removed wholesale in the v6 plan in favour of ESP-NOW.
+
+| | **Transmitter — the guitar** | **Receiver — the dongle ("Heat")** |
+|---|---|---|
+| Board | XIAO ESP32-S3 Sense | XIAO ESP32-S3 Plus |
+| Sensor | VL53L1X single-point ToF | VL53L5CX 8×8 multizone ToF |
+| Senses | hand distance over the guitar body | hand gesture over a floor/amp-mounted pad |
+| MIDI out | USB-MIDI, BLE-MIDI, (ESP-NOW TX — planned) | USB-MIDI (host), DIN + TRS (synths) |
+| Extra out | NeoPixel ring (16), OLED | MCP4561 expression pot, NeoPixel stick (8), OLED |
+| Firmware | `code/tof_midi_v5/` | `code/tof_midi_v6/` (full), `code/tof_midi_v6_rx/` (minimal) |
+
+> **Current status.** The receiver's ESP-NOW RX path and its local VL53L5CX gesture zone are working — so the dongle is usable standalone today. The guitar's ESP-NOW **transmit** path is the remaining piece: the stock v5 guitar still sends BLE-MIDI, so the wireless guitar→dongle link stays silent until the guitar-side ESP-NOW TX lands (see `code/tof_midi_v5/CLAUDE.md §4 B5`).
+
+## The guitar (transmitter)
+
+Wave your hand over the VL53L1X sensor mounted near the pickups. The firmware converts distance and hand speed into MIDI CC and pitch bend messages, sent over USB or Bluetooth LE (and, on the v6 roadmap, ESP-NOW to the receiver). A rotary encoder navigates the OLED menu; a bypass button mutes output; a DIP switch selects the default transport. The sections below document the guitar in detail.
 
 ## MIDI output
 
@@ -66,14 +105,23 @@ GPIO pin ──── ┤ ├ ──── GND
 
 ## Firmware versions
 
-Four versions in `code/`, each building on the last:
+The firmwares in `code/` split along the transmitter/receiver line.
+
+**Transmitter — the guitar:**
 
 | Version | Folder | Description |
 |---------|--------|-------------|
-| v1 | `tof_midi/` | Minimal: distance to CC20 over USB |
-| v2 | `tof_midi_v2/` | Adds velocity CC, pitch bend, BLE, NeoPixel bar |
-| v3 | `tof_midi_v3/` | Adds OLED display |
-| **v4** | **`tof_midi_v4/`** | **Full UI: encoder menu, settings page, NVS persistence, animations** |
+| v4 | `tof_midi_v4/` | Single device: full OLED UI, encoder menu, settings page, NVS persistence, animations |
+| **v5** | **`tof_midi_v5/`** | **Adds WiFi web-config UI, 8 presets, boot self-test, free-heap monitor — USB + BLE MIDI** |
+
+**Receiver — the dongle ("Heat"):**
+
+| Version | Folder | Description |
+|---------|--------|-------------|
+| v6 (rx) | `tof_midi_v6_rx/` | Minimal, works-on-first-flash: ESP-NOW → USB-MIDI + local VL53L5CX 8×8 + OLED link diagnostics |
+| **v6 (full)** | **`tof_midi_v6/`** | **Full Heat dongle: adds DIN/TRS MIDI, MCP4561 expression out, DRONE/RHYTHM/DRUMS routing, NVS presets, WiFi config** |
+
+Each device's folder has its own `README.md` with the deep detail; the sections below summarise the guitar's v4 UI (largely carried into v5) and the receiver dongle.
 
 ### v4 features
 
@@ -270,9 +318,44 @@ Velocity = |delta EMA| per poll cycle
 - **Flash persistence**: Settings saved to ESP32 NVS with 2-second write debounce to prevent flash wear from rapid encoder scrolling.
 - **DIP live-read**: Transport DIP switch is polled every 200ms in the main loop -- no reboot needed to change transport.
 
+## The receiver dongle ("Heat")
+
+A small box on a custom-milled single-sided PCB, built around a XIAO ESP32-S3 **Plus**. It does the inverse of the guitar: it **receives** the guitar's MIDI over ESP-NOW and re-emits it as **class-compliant USB-MIDI** to a host — and it carries its **own VL53L5CX 8×8 multizone ToF** as a second gesture zone (a floor- or amp-mounted pad), fused into the same MIDI stream. (The dongle was developed as "Heat", a Tangible Music Lab "Out of Control" submission.)
+
+### Hardware
+
+| Component | Part | Bus / pin |
+|-----------|------|-----------|
+| MCU | XIAO ESP32-S3 Plus | — |
+| Sensor | VL53L5CX 8×8 multizone ToF | I²C 0x29 |
+| Display | SSD1306 128×64 OLED | I²C 0x3C |
+| Expression out | MCP4561 single 10kΩ I²C digital pot (PDIP-8) | I²C 0x2E |
+| MIDI out | 5-pin DIN + 3.5mm TRS Type A (shared 2×220 Ω) | Serial1 TX, GPIO43 |
+| Visual | NeoPixel stick (8 px) via 3.3→5V level shifter | GPIO9 (D10) |
+| Controls | EC11 encoder + mute + mode buttons | GPIO7/8/4, D0/D1 |
+
+I²C bus runs at 400 kHz: `0x29` VL53L5CX, `0x2E` MCP4561, `0x3C` OLED.
+
+### Outputs
+
+- **USB-MIDI** — class-compliant (TinyUSB); the guitar's stream plus the dongle's local gesture zone, merged.
+- **DIN + TRS MIDI** — 31250 baud on GPIO43 (Serial1 TX), driving both the 5-pin DIN jack and the 3.5mm TRS Type A jack through a shared 2×220 Ω network.
+- **Expression** — one MCP4561 digital pot at 0x2E → 1/4″ stereo jack, emulating an expression pedal into other gear's EXP input (Casio Dimension-Shifter style). The wiper tracks a selectable ToF feature: distance / velocity / centroid-X / coverage, with optional invert.
+
+### Modes & controls
+
+The full firmware adds a **DRONE / RHYTHM / DRUMS** note router (continuous CCs stream in all three modes — only note triggering differs), cycled with the mode button. The mode button also selects the sensor source (**BOTH → GUITAR → LOCAL**). Bypass/panic is on the encoder tap and the mute button — there is no footswitch. Triple-tapping the encoder opens a WiFi config AP with live readouts, 8 presets, and on-stage routing thresholds (trigger / release / vel-floor / gate-ms).
+
+### Two firmwares
+
+- **`code/tof_midi_v6_rx/`** — focused, works-on-first-flash: ESP-NOW → USB-MIDI passthrough + local VL53L5CX + OLED link diagnostics. Deliberately omits the Heat extras (digipot, DIN/TRS, mode router, web config) so the core link + sensor + display can be confirmed first.
+- **`code/tof_midi_v6/`** — the full Heat dongle, folding those extras back in. Pin-compatible with `v6_rx` so both firmwares run on the same board.
+
+The full standalone Heat PlatformIO project (with its own `README.md`, `ARCHITECTURE.md`, and KiCad) lives under `code/tof_midi_v6_rx/heat/`.
+
 ## Building
 
-### Arduino IDE
+### Guitar — Arduino IDE
 
 1. Board: **XIAO_ESP32S3**
 2. USB Mode: **USB-OTG (TinyUSB)**
@@ -283,17 +366,32 @@ Velocity = |delta EMA| per poll cycle
    - Adafruit GFX
 4. Upload
 
-### Arduino CLI
+### Guitar — Arduino CLI
 
 ```bash
+# v5 (latest guitar firmware) — swap in tof_midi_v4/ for the older single-device build
 arduino-cli compile -b esp32:esp32:XIAO_ESP32S3 \
   --build-property "build.extra_flags=-DARDUINO_USB_MODE=0 -DARDUINO_USB_CDC_ON_BOOT=0" \
-  code/tof_midi_v4/
+  code/tof_midi_v5/
 
 arduino-cli upload -b esp32:esp32:XIAO_ESP32S3 -p /dev/cu.usbmodem* \
-  code/tof_midi_v4/
+  code/tof_midi_v5/
+```
+
+### Receiver dongle
+
+The `.ino` sketches (`tof_midi_v6_rx/`, `tof_midi_v6/`) build the same way under Arduino — board **XIAO_ESP32S3**, USB-OTG (TinyUSB), `ARDUINO_USB_MODE=0`. Libraries: SparkFun VL53L5CX, Adafruit NeoPixel, Adafruit SSD1306, Adafruit GFX (the MCP4561 digipot is driven over raw `Wire`; ESP-NOW + USB-MIDI ship with the ESP32 core).
+
+The full standalone Heat project under `code/tof_midi_v6_rx/heat/` uses PlatformIO instead:
+
+```bash
+pio run -d code/tof_midi_v6_rx/heat/heat                 # build
+pio run -d code/tof_midi_v6_rx/heat/heat -t upload       # flash
 ```
 
 ## PCB
 
-KiCad 9 project files in the root directory (`midiguitar.kicad_sch`, `midiguitar.kicad_pcb`). See `HARDWARE.md` for the full hardware specification and `PCB_BUILD_PLAN.md` for the build guide with BOM.
+Two KiCad projects:
+
+- **Guitar:** `finalMidiGuitar/finalMidiGuitar.kicad_{sch,pcb,pro}`. See `HARDWARE.md` for the full hardware specification.
+- **Receiver dongle ("Heat"):** `code/tof_midi_v6_rx/heat/kicad/heat.kicad_{sch,pcb,pro}`, with `BOM.md` (authoritative parts list) and `PCB_WIRING.md` (pin-by-pin wiring) alongside.
