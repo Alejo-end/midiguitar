@@ -51,10 +51,12 @@
 // XIAO Dn → GPIO:
 //   D0=1 D1=2 D2=3 D3=4 D4=5 D5=6 D6=43 D7=44 D8=7 D9=8 D10=9
 //
-// Pads 1/2/8 (D0/D1/D7) are the free pads on the current board; buttons
-// take D0/D1, D7 is spare. D2/GPIO3 is a strapping pin — left unused.
+// Buttons follow the rev 2026-10 receiver board, same as tof_midi_v6_rx.ino:
+// MODE = S3 on D0, MUTE = S4 on D1 (the footswitch tip is wired in parallel
+// with S4). The D2 expression-pedal input and D7 HOLD footswitch on that
+// board are not used by this sketch yet.
 // The expression output is a digital pot on the I²C bus (no GPIO), and
-// the bypass/mute is on the encoder tap + BTN_MUTE (no footswitch).
+// the bypass/mute is on the encoder tap + BTN_MUTE (and its footswitch).
 
 #define I2C_SDA      5    // D4 → ToF + OLED + MCP4561 digipot bus
 #define I2C_SCL      6    // D5
@@ -65,8 +67,8 @@
 #define ENC_PUSH     4    // D3 → encoder pushbutton to GND
 
 #define MIDI_TX_PIN  43   // D6 → Serial1 TX → DIN + TRS jacks, 220 Ω series
-#define BTN_MUTE     1    // D0 → mute button (all-notes-off panic)   [free pad]
-#define BTN_MODE     2    // D1 → mode-cycle button (DRONE/RHYTHM/DRUMS) [free pad]
+#define BTN_MUTE     2    // D1 → MUTE button S4 + footswitch tip (all-notes-off panic)
+#define BTN_MODE     1    // D0 → MODE button S3 (DRONE/RHYTHM/DRUMS)
 
 // NeoPixel data → level shifter (3.3→5V) → stick DIN. Drives the existing
 // level-shifter input pad (v5 STRIP_PIN = D10). Confirm against the board.
@@ -299,6 +301,7 @@ static void onEspNowRecv(const uint8_t *mac, const uint8_t *data, int len) {
     uint8_t next = (uint8_t)((rxHead + 1) % RX_BUF_LEN);
     if (next == rxTail) { pktOverflow++; return; }
     rxBuf[rxHead] = *p;
+    __sync_synchronize();   // commit the slot before publishing head (as in v6_rx)
     rxHead = next;
 }
 
@@ -594,6 +597,7 @@ static uint8_t  heldCh     = 1;
 static uint32_t gateUntil  = 0;
 static bool     droneActive = false;
 static int16_t  triggerPrev = 0;          // velCC at previous tick
+static int32_t  lastBend    = -1;         // last pitch bend sent (-1 = none / centre)
 
 static void allNotesOffAllChannels() {
     for (uint8_t ch = 1; ch <= 16; ch++) {
@@ -626,6 +630,10 @@ static void enterMode(Mode m) {
         midiNoteOff(droneRoot, 0, midiCh);
         droneActive = false;
     }
+    if (lastBend >= 0) {               // leaving DRONE: re-centre so the next
+        midiPB(8192, midiCh);          // mode's notes aren't played detuned
+        lastBend = -1;
+    }
     triggerPrev = 0;
     gateUntil   = 0;
     currentMode = m;
@@ -646,7 +654,11 @@ static void droneTick() {
     int32_t bend = 8192 + ((int32_t)centroidX * 8192) / 32;
     if (bend < 0) bend = 0;
     if (bend > 16383) bend = 16383;
+    // routeMode() runs every loop pass, not once per frame: send only on change,
+    // or the stream saturates DIN (31250 baud) and delays every other message.
+    if (bend == lastBend) return;
     midiPB((uint16_t)bend, midiCh);
+    lastBend = bend;
 }
 
 static void rhythmTick() {
@@ -702,6 +714,8 @@ static void routeMode() {
         return;
     }
     if (!tofValid) {
+        // Hand gone: rhythmTick() never sees the velocity fall, so release here.
+        if (currentMode == MODE_RHYTHM && heldNote >= 0) releaseHeld();
         triggerPrev = velCC;
         return;
     }
@@ -806,7 +820,10 @@ static void loadSettings() {
         }
     }
     // Persisted mode + invert flag
-    if (prefs.isKey("mode"))     currentMode = (Mode)prefs.getUChar("mode", (uint8_t)MODE_DRONE);
+    if (prefs.isKey("mode")) {
+        uint8_t md = prefs.getUChar("mode", (uint8_t)MODE_DRONE);
+        if (md < MODE_COUNT) currentMode = (Mode)md;
+    }
     if (prefs.isKey("dInv"))     distInvert  = prefs.getBool("dInv", distInvert);
     prefs.end();
 }
@@ -880,7 +897,10 @@ static bool loadPresetFrom(uint8_t slot) {
         }
     }
     presetKey(k, sizeof(k), slot, "mode");
-    if (prefs.isKey(k)) enterMode((Mode)prefs.getUChar(k, (uint8_t)MODE_DRONE));
+    if (prefs.isKey(k)) {
+        uint8_t md = prefs.getUChar(k, (uint8_t)MODE_DRONE);
+        if (md < MODE_COUNT) enterMode((Mode)md);
+    }
     presetKey(k, sizeof(k), slot, "dInv");
     if (prefs.isKey(k)) distInvert = prefs.getBool(k, distInvert);
     prefs.end();
@@ -972,6 +992,27 @@ function state(){
 state();setInterval(live,200);
 </script></body></html>)HTML";
 
+// Requests from the web task (core 0), executed by loop() in
+// serviceWebRequests() so MIDI output and the shared `prefs` handle are only
+// ever touched from one task.
+enum PresetOp : uint8_t { PRESET_OP_NONE, PRESET_OP_LOAD, PRESET_OP_SAVE };
+static volatile int8_t  pendingMode       = -1;
+static volatile uint8_t pendingPresetOp   = PRESET_OP_NONE;
+static volatile uint8_t pendingPresetSlot = 0;
+static volatile bool    pendingPresetOk   = false;
+
+static void serviceWebRequests() {
+    int8_t md = pendingMode;
+    if (md >= 0) { pendingMode = -1; enterMode((Mode)md); oledDirty = true; }
+    uint8_t op = pendingPresetOp;
+    if (op == PRESET_OP_NONE) return;
+    bool ok = (op == PRESET_OP_LOAD) ? loadPresetFrom(pendingPresetSlot)
+                                     : savePresetTo(pendingPresetSlot);
+    oledDirty       = true;
+    pendingPresetOk = ok;
+    pendingPresetOp = PRESET_OP_NONE;   // last: releases the waiting handler
+}
+
 static String macStr() {
     char b[20];
     snprintf(b, sizeof(b), "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -995,7 +1036,7 @@ static void handleLive() {
 }
 
 static void handleState() {
-    refreshPresetsExist();
+    // presetsExistMask is kept current by loop(); no NVS access from this task.
     String j = "{";
     j += "\"mac\":\""    + macStr() + "\",";
     j += "\"presets\":"  + String((int)presetsExistMask) + ",";
@@ -1024,8 +1065,7 @@ static void handleSet() {
         }
     }
     if (webServer.hasArg("mode")) {
-        enterMode((Mode)constrain((int)webServer.arg("mode").toInt(), 0, MODE_COUNT - 1));
-        any = true;
+        pendingMode = (int8_t)constrain((int)webServer.arg("mode").toInt(), 0, MODE_COUNT - 1);
     }
     if (any) { settingsDirty = true; dirtyTime = millis(); oledDirty = true; }
     webServer.send(200, "application/json", "{\"ok\":1}");
@@ -1035,36 +1075,50 @@ static void handlePreset() {
     String op   = webServer.arg("op");
     int    slot = webServer.arg("slot").toInt();
     bool ok = false;
-    if (op == "save") ok = savePresetTo((uint8_t)slot);
-    if (op == "load") ok = loadPresetFrom((uint8_t)slot);
+    if (slot >= 0 && slot < 8 && pendingPresetOp == PRESET_OP_NONE &&
+        (op == "save" || op == "load")) {
+        pendingPresetSlot = (uint8_t)slot;
+        pendingPresetOp   = (op == "save") ? PRESET_OP_SAVE : PRESET_OP_LOAD;
+        // Wait for loop() so the page's follow-up /api/state sees the result.
+        uint32_t deadline = millis() + 500;
+        while (pendingPresetOp != PRESET_OP_NONE && (int32_t)(millis() - deadline) < 0) delay(2);
+        ok = (pendingPresetOp == PRESET_OP_NONE) && pendingPresetOk;
+    }
     webServer.send(200, "application/json", String("{\"ok\":") + (ok ? "1" : "0") + "}");
 }
 
 static void webTaskFn(void *) {
-    webServer.on("/",            handleRoot);
-    webServer.on("/api/live",    handleLive);
-    webServer.on("/api/state",   handleState);
-    webServer.on("/api/set",     handleSet);
-    webServer.on("/api/preset",  handlePreset);
+    static bool routesAdded = false;   // WebServer keeps handlers across stop()/begin()
+    if (!routesAdded) {
+        webServer.on("/",            handleRoot);
+        webServer.on("/api/live",    handleLive);
+        webServer.on("/api/state",   handleState);
+        webServer.on("/api/set",     handleSet);
+        webServer.on("/api/preset",  handlePreset);
+        routesAdded = true;
+    }
     webServer.begin();
-    webTaskAlive = true;
     while (configMode) {
         webServer.handleClient();
         delay(2);
     }
-    webServer.stop();
+    webServer.stop();                  // from this task, after the last handleClient()
     webTaskAlive = false;
     vTaskDelete(nullptr);
 }
 
 static void enterConfigMode() {
     if (configMode) return;
+    if (webTaskAlive) return;          // previous web task still finishing a client
     configMode = true;
     // Bring up the AP. ESP-NOW continues to receive on channel 1; the AP
     // is also pinned to channel 1 so both work simultaneously.
     WiFi.softAP(AP_SSID, AP_PASS, 1);
     delay(100);
-    xTaskCreatePinnedToCore(webTaskFn, "webcfg", 8192, nullptr, 1, &webTask, 1);
+    // Core 0: handleClient() can block on a slow client and must never stall
+    // the MIDI loop on core 1 (../tof_midi_v5/CLAUDE.md §2.1).
+    webTaskAlive = true;
+    xTaskCreatePinnedToCore(webTaskFn, "webcfg", 8192, nullptr, 1, &webTask, 0);
     showToast("CONFIG");
 }
 
@@ -1086,17 +1140,27 @@ static void handleEncoder() {
     encDelta = 0;
     interrupts();
 
-    static bool      prev      = false;
+    static bool      prev       = false;
+    static bool      rawPushed  = false;
+    static uint32_t  rawEdge    = 0;
     static uint32_t  pressStart = 0;
     static bool      longFired  = false;
     static bool      saveFired  = false;
+    static Page      pressPage  = PG_LIVE;
     static uint8_t   tapCount   = 0;
     static uint32_t  tapsStart  = 0;
 
-    bool     pushed = (digitalRead(ENC_PUSH) == LOW);
-    uint32_t now    = millis();
+    uint32_t now = millis();
+    // Debounce the push contact — a bouncing release used to register as
+    // extra taps (and could reach the triple-tap config gesture).
+    bool r = (digitalRead(ENC_PUSH) == LOW);
+    if (r != rawPushed) { rawPushed = r; rawEdge = now; }
+    bool pushed = ((now - rawEdge) >= BTN_DEBOUNCE_MS) ? rawPushed : prev;
 
-    if (pushed && !prev) { pressStart = now; longFired = false; saveFired = false; }
+    if (pushed && !prev) {
+        pressStart = now; longFired = false; saveFired = false;
+        pressPage  = currentPage;
+    }
 
     if (pushed && !longFired && (now - pressStart) >= ENC_HOLD_MIN_MS) {
         longFired = true;
@@ -1106,24 +1170,34 @@ static void handleEncoder() {
             oledDirty = true;
         }
     }
-    if (pushed && !saveFired && currentPage == PG_PRESETS &&
+    // Save only when the press STARTED on PRESETS, so a hold that flips onto
+    // this page from SETTINGS can't overwrite the selected slot.
+    if (pushed && !saveFired && pressPage == PG_PRESETS && currentPage == PG_PRESETS &&
         (now - pressStart) >= ENC_SAVE_MIN_MS) {
         saveFired = true;
         savePresetTo(presetSlot);
         oledDirty = true;
     }
 
+    // Short taps are counted and only acted on once the tap window closes, so
+    // a triple-tap (config mode) doesn't fire stray page actions on the way.
     if (!pushed && prev) {
         uint32_t held = now - pressStart;
-        if (held < ENC_TAP_MAX_MS && !longFired) {
-            // Multi-tap accumulator (triple-tap → config mode toggle)
-            if ((now - tapsStart) > CFG_TAP_WINDOW) { tapsStart = now; tapCount = 0; }
+        if (pressPage == PG_PRESETS && longFired && !saveFired) {
+            // Released between hold and save: leave PRESETS (rotation there
+            // moves the slot cursor, so this is the only way off the page).
+            currentPage = (Page)((uint8_t)(currentPage + 1) % NUM_PAGES);
+            oledDirty = true;
+        } else if (held < ENC_TAP_MAX_MS && !longFired) {
+            if (tapCount == 0) tapsStart = now;
             tapCount++;
-            if (tapCount >= CFG_TAP_COUNT) {
-                tapCount = 0;
-                if (configMode) exitConfigMode(); else enterConfigMode();
-                oledDirty = true;
-            } else {
+        }
+    }
+    if (tapCount > 0 && (now - tapsStart) > CFG_TAP_WINDOW) {
+        if (tapCount >= CFG_TAP_COUNT) {
+            if (configMode) exitConfigMode(); else enterConfigMode();
+        } else {
+            for (uint8_t t = 0; t < tapCount; t++) {
                 // Single short tap: context action per page.
                 switch (currentPage) {
                     case PG_LIVE:
@@ -1148,8 +1222,9 @@ static void handleEncoder() {
                         break;
                 }
             }
-            oledDirty = true;
         }
+        tapCount = 0;
+        oledDirty = true;
     }
     prev = pushed;
 
@@ -1324,8 +1399,7 @@ static void drawPageSettings() {
 }
 
 static void drawPagePresets() {
-    drawPageHeader("PRESETS");
-    refreshPresetsExist();
+    drawPageHeader("PRESETS");   // presetsExistMask: read at boot, updated on save
 
     // 2x4 grid of slots
     for (uint8_t i = 0; i < 8; i++) {
@@ -1453,8 +1527,8 @@ void setup() {
     // NeoPixel feedback
     initNeoPixel();
 
-    // USB-MIDI — enableDFU before begin (ESP32-S3 TinyUSB quirk)
-    USB.enableDFU();
+    // USB-MIDI. No USB.enableDFU(): the CDC+DFU+MIDI composite makes hosts skip
+    // the MIDI interface (see ../tof_midi_v5/CLAUDE.md §6).
     usbMidi.begin();
     USB.begin();
 
@@ -1481,7 +1555,7 @@ void setup() {
         .idle_core_mask = 0,
         .trigger_panic  = true,
     };
-    esp_task_wdt_init(&wdtCfg);
+    esp_task_wdt_reconfigure(&wdtCfg);   // core 3.x pre-inits the TWDT; init() would fail
     esp_task_wdt_add(nullptr);
 
     rateWindowStart = millis();
@@ -1499,6 +1573,7 @@ void loop() {
 
     handleEncoder();
     handleButtons();
+    serviceWebRequests();
 
     pollToF();
     drainRx();
