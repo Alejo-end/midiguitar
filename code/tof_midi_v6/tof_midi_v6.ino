@@ -116,6 +116,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_mac.h>       // esp_read_mac() + ESP_MAC_WIFI_STA — core 3.x moved these here
 #include <Adafruit_NeoPixel.h>
 #include <SparkFun_VL53L5CX_Library.h>
 #include <Preferences.h>
