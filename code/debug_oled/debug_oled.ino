@@ -11,14 +11,14 @@
 // Libs : Adafruit SSD1306, Adafruit GFX
 //
 // Pin map: the schematic (J4 OLED) has SDA on XIAO D4 = GPIO5 and SCL on
-// XIAO D5 = GPIO6. The v5 firmware uses GPIO43/6 instead, which does not
-// match this board. Toggle USE_FIRMWARE_PINS if you want to try that map.
+// XIAO D5 = GPIO6, which is also what tof_midi_v5 uses now. Older firmware
+// (v4) used GPIO43/6; set USE_FIRMWARE_PINS to 1 to try that legacy map.
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-#define USE_FIRMWARE_PINS 0   // 0 = schematic (correct), 1 = v5 firmware
+#define USE_FIRMWARE_PINS 0   // 0 = schematic / v5 (correct), 1 = legacy v4 map
 
 #if USE_FIRMWARE_PINS
   #define I2C_SDA  43

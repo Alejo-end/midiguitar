@@ -22,3 +22,9 @@ Thumbs.db
 
 
 .heat/
+
+# Arduino build output
+build/
+*.bin
+*.elf
+*.map

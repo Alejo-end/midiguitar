@@ -11,18 +11,19 @@ that shape it, and a prioritised roadmap of work to do next.
 A Squier Mustang fitted with a XIAO ESP32-S3 Sense that turns hand gestures and
 button presses into MIDI. Key pieces:
 
-- **VL53L1X ToF sensor** (I²C @ 0x30) — distance → MIDI CC or 14-bit pitch bend
-- **Adafruit NeoPixel ring** (16 px, GPIO 1 via level shifter) — visual feedback
-- **SSD1306 OLED** (128×64, I²C @ 0x3C) — UI + status
-- **Rotary encoder + push** (GPIOs 3, 2, 44) — primary navigation
-- **TTP223 / tactile button** (GPIO 7) — context-sensitive action / triple-tap config
-- **NVS (Preferences)** — persists user settings across reboots
+- **VL53L1X ToF sensor** (I²C @ 0x29, no XSHUT/INT on this PCB) — distance → MIDI CC or 14-bit pitch bend
+- **Adafruit NeoPixel ring** (16 px, GPIO 9 / D10 via level shifter) — visual feedback
+- **SSD1306 OLED** (128×64, I²C @ 0x3C, SDA 5 / SCL 6) — UI + status
+- **Rotary encoder + push** (A 7, B 8, push 4) — the only control; tap / hold / triple-tap
+- **Tactile button SW1** (GPIO 3) — populated but unused (reads stuck LOW)
+- **NVS (Preferences)** — persists user settings and 8 presets across reboots
 
-Three MIDI transports coexist: **USB-MIDI** (TinyUSB), **BLE-MIDI** (custom 5-byte
-packet format), and a **WiFi AP config mode** that exposes a web form on
-`192.168.4.1` for editing settings from a phone.
+MIDI goes out two ways: **USB-MIDI** (TinyUSB) and an **ESP-NOW broadcast** on
+WiFi channel 1 to the receiver dongle (`../tof_midi_v6_rx/`). BLE has been
+removed. A **WiFi AP config mode** (triple-tap) exposes a web page on
+`192.168.4.1` / `midiguitar.local`; ESP-NOW is paused while it is up.
 
-The firmware is single-file Arduino C++ (~1200 lines). Hot path is a 20 ms poll
+The firmware is single-file Arduino C++ (~1500 lines). Hot path is a 20 ms poll
 loop on Arduino's core 1; the WiFi server runs on core 0 only when config mode
 is entered.
 
@@ -34,7 +35,7 @@ These exist for real reasons and have been hit during development. Any change
 that breaks one of these is a regression.
 
 ### 2.1 Performance budget
-- **MIDI latency target: < 5 ms USB, < 20 ms BLE.** Anything that adds blocking
+- **MIDI latency target: < 5 ms USB, < 10 ms ESP-NOW → dongle.** Anything that adds blocking
   work to the main `loop()` is suspect. The sensor poll → MIDI send path must
   stay tight.
 - **No `delay()` longer than 5 ms in `loop()` or anything it calls.** Use
@@ -44,11 +45,12 @@ that breaks one of these is a regression.
   clients and stall MIDI. It belongs in `webTask()` on core 0.
 
 ### 2.2 Radio
-- WiFi and BLE share the 2.4 GHz radio. Running both *simultaneously* causes
-  audible BLE-MIDI jitter. Config mode is therefore gated behind a triple-tap
-  gesture and turns WiFi off on exit. **Do not auto-enable WiFi at boot.**
-- If you ever need WiFi + BLE at the same time, reduce WiFi TX power
-  (`WiFi.setTxPower(WIFI_POWER_8_5dBm)`) and accept that BLE will be jittery.
+- ESP-NOW and the config AP share the radio. Config mode (triple-tap) tears
+  ESP-NOW down, runs the AP on the ESP-NOW channel, and re-inits ESP-NOW on
+  exit. **Do not auto-enable the AP at boot.**
+- Both ends of the ESP-NOW link must use the same channel (`ESPNOW_CHANNEL`, 1).
+- Web handlers run on core 0: anything that touches NVS or sends MIDI must be
+  handed to `loop()` (see `servicePresetRequest()`), never called directly.
 
 ### 2.3 Watchdog
 - The task WDT is 10 seconds. Both `loop()` and `webTask()` reset it. Any new
@@ -56,7 +58,7 @@ that breaks one of these is a regression.
   pinned to a non-monitored core.
 
 ### 2.4 Memory
-- After init with BLE + USB-MIDI active, free heap should be ≥ 100 KB. Adding
+- After init with ESP-NOW + USB-MIDI active, free heap should be ≥ 100 KB. Adding
   WiFi pulls it down to ~70 KB. If you go below 50 KB, something is wrong
   (probably a String leak or a Web server with PROGMEM-less HTML).
 - Don't use `String` in the hot path. Use `char[]` + `snprintf`.
@@ -73,12 +75,11 @@ socket M1). Don't change them without updating the hardware. The mapping
 between Seeed's "Dn" labels and ESP32 GPIOs is:
 
 ```
-D0=1, D1=2, D2=3, D4=5, D5=6, D6=43, D7=44, D8=7, D10=9
+D0=1, D1=2, D2=3, D3=4, D4=5, D5=6, D6=43, D7=44, D8=7, D9=8, D10=9
 ```
 
-The VL53L1X INT pin (D10 / GPIO 9) is **polled, not interrupt-driven**, because
-the trace on the current PCB is unreliable. Don't reintroduce the interrupt
-without verifying the trace.
+The PCB routes no VL53L1X INT or XSHUT line, so the sensor is **polled** at its
+default address 0x29. D10 / GPIO 9 is the NeoPixel data line, not INT.
 
 ---
 
@@ -90,7 +91,7 @@ These are softer than constraints but worth following.
 The sketch is currently single-file. If it grows past ~1500 lines, split into:
 ```
 tof_midi_v5.ino       — setup/loop/globals only
-midi_send.h/.cpp      — sendCC, sendPB, BLE/USB plumbing
+midi_send.h/.cpp      — sendCC, sendPB, ESP-NOW/USB plumbing
 sensor.h/.cpp         — VL53L1X init + poll + curve mapping
 ui_oled.h/.cpp        — all draw* functions + page state machine
 ui_ring.h/.cpp        — NeoPixel animations
@@ -118,7 +119,7 @@ size.
 
 ### 3.4 NeoPixel rendering
 - Animations are exclusive: `updateRing()` decides which one runs based on
-  state precedence (BLE flash > wipe > config > BLE chase > bypass > live).
+  state precedence (wipe > config > bypass > live).
 - Adding a new animation = adding a new branch to `updateRing()` AND a new
   `show*()` helper. Keep precedence explicit.
 
@@ -197,16 +198,14 @@ floor/amp-mounted gesture pad — second expressive zone alongside the guitar
 neck's sensor, both fused into the same MIDI/CV output stream.
 
 Firmware split (both live alongside `tof_midi_v5/` in the `code/` directory):
-- **Guitar (`tof_midi_v6_tx/tof_midi_v6_tx.ino`):** *not yet written.* Strip
-  `bleSend()` + BLE init from v5; add ESP-NOW send with the 5-byte packet
-  format defined below. Keep USB-MIDI as the tethered fallback.
+- **Guitar:** *done, in `tof_midi_v5.ino` itself* (no separate `_tx` sketch).
+  BLE is gone; MIDI is broadcast over ESP-NOW with the 5-byte packet below,
+  with USB-MIDI as the tethered output.
 - **Dongle (`tof_midi_v6_rx/tof_midi_v6_rx.ino`):** *initial cut landed.*
-  ESP-NOW recv callback → ring buffer → USB-MIDI write. SSD1306 page UI for
-  link diagnostics (LIVE = last msg + pps + age, INFO = self/peer MAC +
-  counters + heap, encoder long-press = page, tap on INFO = reset counters).
-  No DAC or local sensor yet — those are PRs 3 and 4. VL53L5CX poll, when
-  added, must run on a separate task pinned to core 0 (same pattern as
-  `webTask` in v5).
+  *Current:* ESP-NOW RX → USB-MIDI + DIN MIDI OUT, pairing, local VL53L5CX,
+  expression pedal (D2), MUTE / HOLD footswitches. `../tof_midi_v6/` is an
+  experimental variant with a mode router and an MCP4561 expression output
+  instead of the MCP4728 CV plan below.
 
 Wire-format contract (both ends must agree, byte-identical):
 ```
@@ -245,10 +244,8 @@ Slicing into reviewable PRs:
 
 Constraints from §2 still apply: ESP-NOW receive callbacks must not block
 core 1 on the dongle; the 20 ms loop budget on the guitar is unchanged.
-Once v6 ships and BLE is removed, §6's note about the BLE-MIDI timestamp
-gymnastics becomes obsolete — delete it then. §2.2's WiFi+BLE coexistence
-rule is superseded by a new WiFi+ESP-NOW coexistence rule (same channel,
-or one at a time); update §2.2 as part of PR 1.
+BLE has since been removed: the §6 BLE timestamp note is gone and §2.2 now
+holds the WiFi + ESP-NOW coexistence rule.
 
 ### Phase C — networking
 
@@ -321,15 +318,12 @@ When picking up a task:
 
 Things that look weird but are weird for a reason:
 
-- **VL53 INT pin is set as `INPUT_PULLUP` but never read.** Trace damage on the
-  PCB; polling instead. Don't "clean this up."
+- **The VL53L1X is polled, not interrupt-driven.** The PCB has no INT trace.
 - **No `USB.enableDFU()`.** It was removed (v5 + v6_rx): the CDC+DFU+MIDI
   composite made hosts (macOS / Ableton) enumerate the serial port but skip the
   MIDI interface, so the device didn't appear as a MIDI input. Plain CDC+MIDI
   (`usbMidi.begin(); USB.begin();`) enumerates reliably. Don't re-add enableDFU
   unless you also re-verify the device still shows up in Audio MIDI Setup.
-- **`bleSend()` builds the timestamp manually.** The 13-bit BLE-MIDI timestamp
-  format is non-obvious. Don't "simplify" without reading the MIDI BLE spec.
 - **The intro animation runs before WDT init.** Intentional — the animation is
   ~2 seconds and would otherwise need WDT resets sprinkled in.
 - **Settings page scrollbar height math looks weird.** It is. Tested visually.

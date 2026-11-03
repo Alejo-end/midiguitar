@@ -1,5 +1,7 @@
 # Assignment 10 — Networking and Communications
 
+> **Out of date.** Written while v5 still had BLE-MIDI; v5 now sends USB-MIDI + ESP-NOW and has no Bluetooth. For the current hardware and firmware see the top-level [README](../../README.md).
+
 > Project: **MIDI Guitar** — a Squier Mustang fitted with a XIAO ESP32-S3 Sense
 > that turns hand-distance gestures over a VL53L1X time-of-flight sensor into
 > MIDI Control Change and Pitch Bend messages. (The S3 and the C3 share the

@@ -16,10 +16,9 @@
 // (../tof_midi_v5/CLAUDE.md §4 B5).
 //
 // PRECONDITION: nothing arrives over ESP-NOW until a transmitter sends 0xCB
-// packets on WiFi channel 1. The stock v5 guitar still transmits BLE, not
-// ESP-NOW, so the guitar half stays silent ("no ESP-NOW link yet" on screen)
-// until the guitar-side ESP-NOW TX is written (CLAUDE.md §4 B5, PR-1). The
-// on-board VL53L5CX works independently, so the dongle is testable on its own.
+// packets on WiFi channel 1 — tof_midi_v5 broadcasts them (it pauses while its
+// WiFi config mode is up). Until then the screen shows "no ESP-NOW link yet".
+// The on-board VL53L5CX works independently, so the dongle is testable on its own.
 //
 // Board: XIAO ESP32-S3 (Heat dongle PCB), USB: USB-OTG (TinyUSB)
 // Libs (Arduino IDE Library Manager):
@@ -1122,7 +1121,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
 
-    // Bus at 100 kHz for reliable OLED init on a marginal clone panel.
+    // I2C_FREQ: see the note at its #define.
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ);
     delay(50);
 

@@ -279,6 +279,7 @@ static void updateEma(float &v, float s, float a) {
 }
 
 static float normCurve(float v, float lo, float hi) {
+    if (hi <= lo) return 0.0f;   // Dist Min ≥ Dist Max: no usable window
     return applyCurve(constrain((v - lo) / (hi - lo), 0.0f, 1.0f));
 }
 
@@ -483,6 +484,12 @@ static bool setMode(Mode newM);
 static bool savePresetTo(uint8_t slot);
 static bool loadPresetFrom(uint8_t slot);
 
+// Preset request from the web task, executed by loop() — see servicePresetRequest().
+enum PresetOp : uint8_t { PRESET_OP_NONE, PRESET_OP_LOAD, PRESET_OP_SAVE };
+static volatile uint8_t pendingPresetOp   = PRESET_OP_NONE;
+static volatile uint8_t pendingPresetSlot = 0;
+static volatile bool    pendingPresetOk   = false;
+
 static void handleRoot() {
     webServer.send_P(200, "text/html", WEB_UI_HTML);
 }
@@ -544,16 +551,30 @@ static void handleApiPreset() {
         webServer.send(400, "text/plain", "bad slot");
         return;
     }
+    // NVS work is handed to loop() (core 1) so the shared `prefs` handle is
+    // never opened from two cores at once. This task (core 0) waits for the
+    // result so the page's follow-up /api/state read sees the new values.
+    if (pendingPresetOp != PRESET_OP_NONE) {
+        webServer.send(503, "text/plain", "busy");
+        return;
+    }
     if (op == "load") {
-        if (!loadPresetFrom((uint8_t)slot)) { webServer.send(404, "text/plain", "empty"); return; }
-        showToast("LOADED");
+        if (!((presetsExistMask >> slot) & 1)) { webServer.send(404, "text/plain", "empty"); return; }
+        pendingPresetSlot = (uint8_t)slot;
+        pendingPresetOp   = PRESET_OP_LOAD;
     } else if (op == "save") {
-        if (!savePresetTo((uint8_t)slot)) { webServer.send(500, "text/plain", "err"); return; }
-        showToast("SAVED");
+        pendingPresetSlot = (uint8_t)slot;
+        pendingPresetOp   = PRESET_OP_SAVE;
     } else {
         webServer.send(400, "text/plain", "bad op");
         return;
     }
+    const uint32_t deadline = millis() + 500;
+    while (pendingPresetOp != PRESET_OP_NONE && (int32_t)(millis() - deadline) < 0) {
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    if (pendingPresetOp != PRESET_OP_NONE) { webServer.send(503, "text/plain", "busy"); return; }
+    if (!pendingPresetOk) { webServer.send(500, "text/plain", "err"); return; }
     oledDirty = true;
     webServer.send(204);
 }
@@ -566,6 +587,9 @@ static void webTask(void*) {
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(2));
     }
+    // Stop the server from this task, after the last handleClient() returned,
+    // so a slow client can never be torn down underneath us (CLAUDE.md A1).
+    webServer.stop();
     esp_task_wdt_delete(nullptr);
     webTaskAlive = false;     // signal exitConfigMode that handleClient won't run again
     vTaskDelete(nullptr);
@@ -573,6 +597,7 @@ static void webTask(void*) {
 
 static void enterConfigMode() {
     if (configMode) return;
+    if (webTaskAlive) return;   // previous webTask still finishing a client — retry later
     configMode = true;
 
     // Tear down ESP-NOW here, while it's still live and WiFi is up (safe), so
@@ -593,13 +618,18 @@ static void enterConfigMode() {
     MDNS.begin("midiguitar");
     MDNS.addService("http", "tcp", 80);
 
-    webServer.on("/",           handleRoot);
-    webServer.on("/api/state",  handleApiState);
-    webServer.on("/api/live",   handleApiLive);
-    webServer.on("/api/set",    handleApiSet);
-    webServer.on("/api/preset", handleApiPreset);
+    static bool routesAdded = false;   // WebServer keeps handlers across stop()/begin()
+    if (!routesAdded) {
+        webServer.on("/",           handleRoot);
+        webServer.on("/api/state",  handleApiState);
+        webServer.on("/api/live",   handleApiLive);
+        webServer.on("/api/set",    handleApiSet);
+        webServer.on("/api/preset", handleApiPreset);
+        routesAdded = true;
+    }
     webServer.begin();
 
+    webTaskAlive = true;   // set before the task runs so a quick exit still waits for it
     xTaskCreatePinnedToCore(webTask, "web", 8192, nullptr, 1, &webTaskH, 0);
 
     static char ipMsg[24];
@@ -615,15 +645,15 @@ static void exitConfigMode() {
     if (!configMode) return;
     configMode = false;
 
-    // CLAUDE.md A1 — wait for webTask to clear webTaskAlive before stopping
-    // the server, otherwise its in-flight handleClient() could run after
-    // webServer.stop() returns and dereference a torn-down handler.
+    // CLAUDE.md A1 — webTask stops the server itself once its last
+    // handleClient() returns. Give it a moment before tearing the AP down; if
+    // a slow client outlasts the deadline, enterConfigMode() refuses to start
+    // a second webTask until this one has gone.
     const uint32_t deadline = millis() + 200;
     while (webTaskAlive && (int32_t)(millis() - deadline) < 0) {
         vTaskDelay(pdMS_TO_TICKS(5));
     }
     MDNS.end();
-    webServer.stop();
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
     webTaskH = nullptr;
@@ -923,6 +953,18 @@ static bool loadPresetFrom(uint8_t slot) {
     return true;
 }
 
+// Run a preset load/save queued by handleApiPreset() (web task, core 0).
+static void servicePresetRequest() {
+    uint8_t op = pendingPresetOp;
+    if (op == PRESET_OP_NONE) return;
+    bool ok = (op == PRESET_OP_LOAD) ? loadPresetFrom(pendingPresetSlot)
+                                     : savePresetTo(pendingPresetSlot);
+    if (ok) showToast(op == PRESET_OP_LOAD ? "LOADED" : "SAVED");
+    oledDirty       = true;
+    pendingPresetOk = ok;
+    pendingPresetOp = PRESET_OP_NONE;   // last: releases the waiting handler
+}
+
 static void drawPageSettings() {
     drawPageHeader("SETTINGS");
     if (settingsEditing) {
@@ -1185,6 +1227,7 @@ static void toggleBypass() {
 //                                  (PG_LIVE: bypass, PG_MODE: cycle,
 //                                   PG_SETTINGS: toggle edit, PG_PRESETS: load)
 //   long press (held ≥ 600 ms)   — advance to next page
+//                                  (on PG_PRESETS: on release, if < 1500 ms)
 //   long press on PG_PRESETS     — save preset (≥ 1500 ms)
 //   triple-tap (3 short ≤ 600 ms) — toggle WiFi config mode
 //
@@ -1202,6 +1245,7 @@ static void handleEncoder() {
     static uint8_t       pendingTaps = 0;
     static bool          longFired  = false;
     static bool          saveFired  = false;
+    static Page          pressPage  = PG_LIVE;
 
     bool     pushed = digitalRead(ENC_PUSH) == LOW;
     uint32_t now    = millis();
@@ -1211,17 +1255,23 @@ static void handleEncoder() {
         pressStart = now;
         longFired  = false;
         saveFired  = false;
+        pressPage  = currentPage;
     }
 
     // Held — fire long-hold actions exactly once
     if (pushed && !configMode) {
-        if (!saveFired && currentPage == PG_PRESETS && now - pressStart >= ENC_SAVE_MIN_MS) {
+        // Save only when the press STARTED on PRESETS, so a hold that flips
+        // onto this page can't overwrite a slot.
+        if (!saveFired && pressPage == PG_PRESETS && currentPage == PG_PRESETS &&
+            now - pressStart >= ENC_SAVE_MIN_MS) {
             saveFired = true;
             longFired = true;  // suppress page-advance below
             showToast(savePresetTo((uint8_t)presetCursor) ? "SAVED" : "ERR");
             oledDirty = true;
         }
-        if (!longFired && now - pressStart >= ENC_HOLD_MIN_MS) {
+        // On PRESETS the page advance waits for release (below); firing it at
+        // 600 ms would leave the page before the 1500 ms save could trigger.
+        if (!longFired && pressPage != PG_PRESETS && now - pressStart >= ENC_HOLD_MIN_MS) {
             longFired = true;
             currentPage = (Page)wrap((int8_t)currentPage + 1, NUM_PAGES);
             oledDirty = true;
@@ -1231,7 +1281,10 @@ static void handleEncoder() {
     // Release edge — register a short tap for the tap-window logic
     if (!pushed && prev) {
         uint32_t held = now - pressStart;
-        if (held < ENC_TAP_MAX_MS && !longFired && !saveFired) {
+        if (!configMode && pressPage == PG_PRESETS && !saveFired && held >= ENC_HOLD_MIN_MS) {
+            currentPage = (Page)wrap((int8_t)currentPage + 1, NUM_PAGES);   // hold-release = next page
+            oledDirty = true;
+        } else if (held < ENC_TAP_MAX_MS && !longFired && !saveFired) {
             if (now - firstTapAt > CFG_TAP_WINDOW) {
                 pendingTaps = 1;
                 firstTapAt  = now;
@@ -1430,7 +1483,9 @@ void setup() {
         .idle_core_mask = 0,
         .trigger_panic  = true,
     };
-    esp_task_wdt_init(&wdtCfg);
+    // Core 3.x has already initialised the TWDT, so init() would fail with
+    // ESP_ERR_INVALID_STATE and keep the 5 s default — reconfigure instead.
+    esp_task_wdt_reconfigure(&wdtCfg);
     esp_task_wdt_add(nullptr);
 
     lastActivity = millis();
@@ -1444,6 +1499,8 @@ void setup() {
 void loop() {
     esp_task_wdt_reset();
     const uint32_t now = millis();   // cache once — every read below uses this
+
+    servicePresetRequest();
 
 #if DEBUG
     // ESP-NOW TX diagnostic. rdy=1: initEspNow OK. tx: successful broadcasts —
