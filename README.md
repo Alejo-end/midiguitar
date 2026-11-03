@@ -17,7 +17,7 @@ The system has two halves:
 | **`code/tof_midi_v6_rx/`** | Receiver dongle | **Current.** ESP-NOW RX → USB + DIN MIDI, local VL53L5CX, expression pedal, footswitches, pairing. |
 | `code/tof_midi_v6/` | Receiver dongle | Experimental "Heat" build: mode router (DRONE / RHYTHM / DRUMS), MCP4561 expression output, presets, web config. Untested on hardware; ignores the dongle's expression input and HOLD footswitch. |
 | `code/tof_midi_v4/` | Older guitar wiring | Legacy (BLE-MIDI, old pin map). Does **not** match the current PCB. |
-| `code/debug/`, `code/debug_oled/` | — | Bring-up diagnostics. `debug/` still uses the old pin map. |
+| `code/debug/`, `code/debug_oled/` | Guitar PCB | Bring-up diagnostics (peripheral self-test, OLED-only test). |
 
 ## Wiring
 
@@ -68,6 +68,8 @@ arduino-cli compile -b esp32:esp32:XIAO_ESP32S3:USBMode=default,CDCOnBoot=cdc co
 ```bash
 arduino-cli compile -b esp32:esp32:XIAO_ESP32S3:USBMode=default,CDCOnBoot=cdc code/tof_midi_v6_rx/
 ```
+
+GitHub Actions (`.github/workflows/compile.yml`) compiles the v5, v6, v6_rx and debug sketches on every push.
 
 After editing `code/tof_midi_v5/web_ui.html`, regenerate the embedded page with `code/tof_midi_v5/tools/build_web_ui.sh`.
 

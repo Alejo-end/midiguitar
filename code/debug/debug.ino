@@ -19,17 +19,16 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-// Pin map matches finalMidiGuitar schematic (XIAO ESP32S3 socket M1).
-#define I2C_SDA     43
-#define I2C_SCL     6
+// Pin map matches finalMidiGuitar PCB (XIAO ESP32S3 socket M1) and tof_midi_v5.
+// The board has no XSHUT or INT trace; the VL53L1X stays at 0x29.
+#define I2C_SDA     5     // D4
+#define I2C_SCL     6     // D5
 #define I2C_FREQ    400000
-#define XSHUT_VL53  5
-#define VL53_INT    9
-#define STRIP_PIN   1
-#define BTN_EDIT    7
-#define ENC_A       3
-#define ENC_B       2
-#define ENC_PUSH    44
+#define STRIP_PIN   9     // D10 → level shifter → ring
+#define BTN_EDIT    3     // D2 → SW1 (reads stuck LOW on the current PCB — a known fault)
+#define ENC_A       7     // D8
+#define ENC_B       8     // D9
+#define ENC_PUSH    4     // D3
 #define NUM_PIXELS  16
 #define OLED_ADDR   0x3C
 #define OLED_W      128
@@ -139,14 +138,6 @@ void setup() {
                   digitalRead(BTN_EDIT), digitalRead(ENC_PUSH),
                   digitalRead(ENC_A),    digitalRead(ENC_B));
 
-    // ToF clean-boot: pulse XSHUT low then high.
-    pinMode(XSHUT_VL53, OUTPUT);
-    digitalWrite(XSHUT_VL53, LOW);
-    delay(10);
-    digitalWrite(XSHUT_VL53, HIGH);
-    delay(10);
-    pinMode(VL53_INT, INPUT_PULLUP);
-
     // I2C
     Wire.begin(I2C_SDA, I2C_SCL, I2C_FREQ);
     delay(50);
@@ -166,7 +157,7 @@ void setup() {
         oled.display();
     }
 
-    // ToF — try default address 0x29 (cleanest after XSHUT cycle).
+    // ToF — default address 0x29 (no XSHUT remap on this board).
     Serial.print("[ToF] init at 0x29... ");
     if (sensor.begin() == 0) {
         sensor.setDistanceModeLong();

@@ -1,7 +1,11 @@
 import re
+import sys
+from pathlib import Path
 
-with open('/Users/alejandrodeleon/Documents/NewMedia_Master/digitalFabrication/midiguitar/midiguitar.kicad_sch', 'r') as f:
-    content = f.read()
+# Default: the schematic in this repo. Pass another path as the first argument.
+REPO = Path(__file__).resolve().parents[2]
+SCH = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / 'finalMidiGuitar' / 'finalMidiGuitar.kicad_sch'
+content = SCH.read_text()
 
 # Extract all global labels with their coordinates
 print("=== GLOBAL LABELS ===")

@@ -2,12 +2,12 @@
 
 A Squier Mustang turned into a gesture-controlled MIDI instrument.
 Wave your hand over the body and a distance sensor turns the motion
-into MIDI. Plug it in over USB or pair it as a Bluetooth MIDI device
-and play any soft synth.
+into MIDI. Plug it in over USB, or let it stream wirelessly to the
+receiver dongle (`../tof_midi_v6_rx/`) over ESP-NOW, and play any soft synth.
 
 ## What's in the box
 
-- **XIAO ESP32-S3 Sense** — the brain
+- **XIAO ESP32-S3** — the brain
 - **VL53L1X ToF sensor** — reads hand distance (10–500 mm)
 - **NeoPixel ring (16 LEDs)** — visual feedback
 - **OLED 128×64** — small status screen
@@ -27,7 +27,8 @@ required.
 2. That distance gets mapped to MIDI:
    - **CC mode** → MIDI Control Change (default CC20 distance, CC21 velocity)
    - **PB mode** → 14-bit Pitch Bend
-3. The values are sent over **USB-MIDI**, **Bluetooth MIDI**, or both.
+3. The values are sent over **USB-MIDI** and broadcast over **ESP-NOW**
+   (WiFi channel 1) to the receiver dongle, at the same time.
 4. The OLED shows live values, the LED ring mirrors them, and the
    encoder/button let you tweak settings on the fly.
 
@@ -38,13 +39,12 @@ Plug USB-C in. After a short intro animation a **boot self-test card**
 flashes briefly (OLED / I²C device count / SENSOR pass-fail), then it
 lands on the **LIVE** page, ready to play.
 
-### The five pages
+### The four pages
 **Long-press the encoder (≥ 600 ms)** to advance to the next page:
 
 | Page         | What it shows / does                          |
 |--------------|-----------------------------------------------|
-| **LIVE**     | Distance bar, velocity bar, raw mm, mode info |
-| **OUTPUT**   | Pick USB, BLE, or both                        |
+| **LIVE**     | Distance bar, velocity bar, raw mm, mode info. Rotate = LED brightness |
 | **MODE**     | Pick CC or BEND                               |
 | **SETTINGS** | Eight values: MIDI channel, CC numbers, distance min/max, curve, LED brightness, invert. The header also shows live free-heap in KB (`Hxxk`) — useful for catching leaks. |
 | **PRESETS**  | 8 saved snapshots — load on the fly, save the current setup |
@@ -59,10 +59,10 @@ PCB rev).
 | Gesture                         | Effect                                                |
 |---------------------------------|-------------------------------------------------------|
 | **Short tap** (< 400 ms) on LIVE        | mute / unmute (bypass)                        |
-| **Short tap** on OUTPUT / MODE          | cycle to the next option                      |
+| **Short tap** on MODE                   | cycle CC / BEND                               |
 | **Short tap** on SETTINGS               | toggle edit on the highlighted row            |
 | **Short tap** on PRESETS                | load the highlighted slot                     |
-| **Long-press** (≥ 600 ms)               | advance to the next page                      |
+| **Long-press** (≥ 600 ms)               | advance to the next page (on PRESETS: on release) |
 | **Long-hold** on PRESETS (≥ 1.5 s)      | save current settings to the highlighted slot |
 | **Triple-tap** (3 short within 600 ms)  | enter / exit WiFi config mode                 |
 | **Hold during boot** (≥ 5 s)            | **factory reset** — clears NVS and reboots    |
@@ -142,7 +142,7 @@ the reboot itself is the confirmation.
 
 ### Compile
 ```bash
-arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 tof_midi_v5
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:USBMode=default tof_midi_v5
 ```
 Then flash via Arduino IDE or `arduino-cli upload`.
 
@@ -163,20 +163,19 @@ the header before flashing.
 
 ## Tips & caveats
 
-- **WiFi config mode disables Bluetooth-grade timing.** WiFi and BLE
-  share the same radio. Don't keep config mode open while playing
-  over BLE — it'll glitch. Triple-tap to exit when you're done.
+- **WiFi config mode pauses the wireless link.** ESP-NOW is stopped
+  while the config network is up, so the dongle goes silent (USB-MIDI
+  keeps working). Triple-tap to exit when you're done.
 - **Boot self-test** shows OLED / I²C / SENSOR status for ~1 s after
   the intro. If `SENSOR` reads `FAIL`, check the ribbon cable; the
   VL53L1X retries 3 times at boot.
 - **USB MIDI shows up as "MidiGuitar"** on the host.
-- **Bluetooth pairing**: in iOS/macOS use the Audio MIDI Setup app's
-  MIDI Studio → Bluetooth Configuration. Android needs a BLE-MIDI
-  capable app.
+- **Dongle pairing**: the guitar broadcasts; on the dongle, hold MODE to
+  bond it to this guitar (hold again to unpair).
 - **Heap monitor**: the SETTINGS page header shows `Hxxk` (free heap
   in KB) when not editing. Watch it to catch leaks while developing.
 - All persisted settings (channel, CCs, distance bounds, curve,
-  brightness, invert, transport, mode) come back on reboot. Presets
+  brightness, invert, mode) come back on reboot. Presets
   also include mode.
 
 ## Known limits

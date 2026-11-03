@@ -1,5 +1,7 @@
 # MIDI Guitar — Open Source Hardware Specification
 
+> **Out of date.** This document describes an earlier iteration of the design (VL6180X sensor, slide switches, older pin map). For the current hardware and firmware see the top-level [README](README.md).
+
 > A gesture-controlled MIDI interface embedded in a Squier Mustang electric guitar. Two time-of-flight sensors convert hand movements into MIDI messages over USB or Bluetooth LE, giving guitarists real-time control over effects in Max/MSP, Ableton, or any MIDI host.
 
 ---

@@ -1,5 +1,7 @@
 # Web UI Plan — Max/MSP-style mobile config
 
+> **Out of date.** This was the design plan for the web UI; parts of it (BLE, the OUTPUT/transport setting) no longer exist. The shipped page is `web_ui.html`. For the current hardware and firmware see the top-level [README](../../README.md).
+
 Companion to `CLAUDE.md`. Scope: replace the minimal form served at
 `192.168.4.1` (current `handleRoot()`) with a richer mobile-first page
 that exposes every persisted setting and a live monitor. Closest

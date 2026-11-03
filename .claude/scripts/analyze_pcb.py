@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""Quick analysis of midiguitar.kicad_pcb — board outline, footprint placements,
+"""Quick analysis of finalMidiGuitar.kicad_pcb — board outline, footprint placements,
 unrouted ratlines, layer usage, and rough density check."""
 import re
+import sys
 from pathlib import Path
 
-PCB = Path('/Users/alejandrodeleon/Documents/NewMedia_Master/digitalFabrication/midiguitar/midiguitar.kicad_pcb')
+# Default: the board in this repo. Pass another path as the first argument.
+REPO = Path(__file__).resolve().parents[2]
+PCB = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO / 'finalMidiGuitar' / 'finalMidiGuitar.kicad_pcb'
 content = PCB.read_text()
 
 # Board edge cuts (Edge.Cuts layer) — find min/max XY of all "Edge.Cuts" graphic items
-edge_re = re.compile(r'\(gr_(?:line|rect|arc|circle)[^()]*?\(start ([\-\d.]+) ([\-\d.]+)\)[^()]*?\(end ([\-\d.]+) ([\-\d.]+)\)[^()]*?\(layer "Edge\.Cuts"\)', re.DOTALL)
-edges = edge_re.findall(content)
+# Each gr_* item carries nested (stroke ...) in KiCad 7+, so match up to its
+# own (layer ...) and pull the coordinates out of that span.
 xs, ys = [], []
-for x1, y1, x2, y2 in edges:
-    xs += [float(x1), float(x2)]
-    ys += [float(y1), float(y2)]
+for item in re.finditer(r'\(gr_(?:line|rect|arc|circle)\b(.*?)\(layer "([^"]+)"\)', content, re.DOTALL):
+    if item.group(2) != 'Edge.Cuts':
+        continue
+    for x, y in re.findall(r'\((?:start|mid|end|center) ([\-\d.]+) ([\-\d.]+)\)', item.group(1)):
+        xs.append(float(x)); ys.append(float(y))
 if xs:
     print(f"Board outline: X {min(xs):.2f}–{max(xs):.2f}  Y {min(ys):.2f}–{max(ys):.2f}")
     print(f"Board size:    {max(xs)-min(xs):.2f} mm × {max(ys)-min(ys):.2f} mm")
