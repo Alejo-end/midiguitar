@@ -38,7 +38,8 @@
 
 #define DEBUG           1
 
-// Pin map — XIAO ESP32-S3 socket M1, matches finalMidiGuitar.kicad_sch.
+// Pin map: XIAO ESP32-S3 socket M1 on the REINS guitar board (../../reins-guitar/reins-guitar.kicad_sch).
+// The milled finalMidiGuitar board has the same pins, without SW1 on D1 and the battery on D0.
 // XIAO Dn → GPIO: D0=1 D1=2 D2=3 D3=4 D4=5 D5=6 D6=43 D7=44 D8=7 D9=8 D10=9
 #define I2C_SDA         5     // XIAO D4 → J1 sensor SDA, J4 OLED SDA
 #define I2C_SCL         6     // XIAO D5 → J1 sensor SCL, J4 OLED SCL
@@ -77,7 +78,12 @@
 #define OLED_H          64
 #define OLED_ADDR       0x3C
 #define NUM_PAGES       4
-#define DEBOUNCE_MS     180
+#define DEBOUNCE_MS     25     // button input must hold a level this long before it counts (both edges)
+#define BTN_REPEAT_MS   120    // minimum time between two accepted presses
+#define BTN_STUCK_MS    8000   // held longer than this = stuck or shorted input: ignore until released
+#define MUTE_R          255    // muted ring color (scaled by stripBright). Set 255,255,255 for white.
+#define MUTE_G          0
+#define MUTE_B          0
 
 // Loop tunables
 #define OLED_REFRESH_MS         66     // ~15 fps cap (CLAUDE.md §3.3)
@@ -669,8 +675,9 @@ static void showRing(int16_t val) {
 
 static void showBreathe() {
     float phase = sinf(millis() * TWO_PI / 2000.0f);
-    uint8_t b = 10 + (uint8_t)(30.0f * (1.0f + phase) / 2.0f);
-    uint32_t col = ring.Color(b, b, b);   // white breathe (was yellow)
+    uint8_t b = 40 + (uint8_t)(100.0f * (1.0f + phase) / 2.0f);
+    // Muted = breathing MUTE_R/G/B (red by default), readable from a standing distance.
+    uint32_t col = ring.Color((uint8_t)(b * MUTE_R / 255), (uint8_t)(b * MUTE_G / 255), (uint8_t)(b * MUTE_B / 255));
     for (int i = 0; i < NUM_PIXELS; i++) ring.setPixelColor(i, col);
     ring.show();
 }
@@ -1187,22 +1194,38 @@ static void cycleMode(int8_t dir) {
 
 static void toggleBypass() {
     bypassed = !bypassed;
+    wipeColor = bypassed ? ring.Color(MUTE_R, MUTE_G, MUTE_B) : ring.Color(200, 200, 200);
+    wipeUntil = millis() + 150;   // one ring sweep confirms the press
     showToast(bypassed ? "MUTED" : "ACTIVE");
 }
 
-// SW1 on D1: a press toggles mute on any page, like the encoder tap on PG_LIVE.
+// SW1 on D1, or a footswitch wired in parallel on the same two pads: a press toggles
+// mute on any page. The input must hold its level for DEBOUNCE_MS on press AND on
+// release, so contact bounce cannot make a second press. A button held down for
+// BTN_STUCK_MS is treated as stuck and ignored until it is released.
 static void handleButton(uint32_t now) {
 #if BTN_PIN >= 0
-    static bool     prev   = false;
-    static uint32_t tPress = 0;
+    static bool     stable   = false;   // debounced state, true = pressed
+    static bool     raw      = false;   // last raw reading
+    static uint32_t tRaw     = 0;       // when raw last changed
+    static uint32_t tPress   = 0;       // when the last accepted press happened
+    static bool     stuck    = false;
     const bool down = digitalRead(BTN_PIN) == LOW;
-    if (down && !prev && now - tPress > DEBOUNCE_MS) {
-        tPress = now;
-        toggleBypass();
-        lastActivity = now;
-        if (oledAsleep) { oledAsleep = false; oledDirty = true; }
+    if (down != raw) { raw = down; tRaw = now; }
+    if (raw != stable && now - tRaw >= DEBOUNCE_MS) {
+        stable = raw;
+        if (stable) {
+            if (!stuck && now - tPress >= BTN_REPEAT_MS) {
+                tPress = now;
+                toggleBypass();
+                lastActivity = now;
+                if (oledAsleep) { oledAsleep = false; oledDirty = true; }
+            }
+        } else {
+            stuck = false;
+        }
     }
-    prev = down;
+    if (stable && !stuck && now - tPress >= BTN_STUCK_MS) stuck = true;
 #endif
 }
 
