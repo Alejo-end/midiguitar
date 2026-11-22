@@ -38,9 +38,8 @@ reins-guitar/pickguard/reins-pickguard-assembly.step
 reins-guitar/pickguard/v2/reins-pickguard-v2-assembly.step
 reins-guitar/pickguard/v2/boards/
 
-# Pickguard v3 work in progress (not committed yet)
-reins-guitar/pickguard/v3/
-reins-guitar/pickguard/build_pickguard_v3.py
 
 # Local order notes with account details
 ORDER_TODAY.md
+reins-guitar/pickguard/v3/reins-pickguard-v3-assembly.step
+reins-guitar/pickguard/v3/boards/

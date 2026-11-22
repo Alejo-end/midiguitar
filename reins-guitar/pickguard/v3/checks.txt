@@ -1,0 +1,146 @@
+stack: PCB top -8.10, XIAO underside 3.00, XIAO top 7.41, USB axis 5.80, OLED module underside 3.01 (stack would put it at 2.94), glass top 5.51
+encoder PEC12R shaft 15.0 mm: collar top 0.00, flat 1.90..6.90; hood top 10.30, bezel top 7.41, plinth top 4.20
+pod: ring -3.00..-2.20, LED top -0.60, diffuser 1.40..3.00, base -5.40..-4.20, ToF top -8.60, sensor top -7.04
+board placement: rotate 167.500 deg about Z, then move (234.194, -121.374, -9.610); wire slot angle in the pod frame -69.95 deg
+outline: 741 points, area 267.2 cm2; against the scan trace it adds 23.3 mm2 and takes off 21.8 mm2
+mark: reins-b-mark.svg at 0.32 mm per unit, 19.8 x 10.2 mm, centre (150.0, 160.0), turned 0.0 deg; strokes 1.92, gaps 1.28, dots 2.56 mm; cut 1.0 mm deep to the orange ply
+plate: 1 solid(s), volume 62.2 cm3, bbox 196.5 x 187.6
+knob: 12.4 mm, Z 5.20..14.20, hub down to 1.00; shaft in the knob 5.90 mm, of it on the flat 5.00 mm
+battery cradle: Z -18.70..-11.40; the pickup cavity must be at least 19.7 mm deep under the pod
+
+Interference at rest (mm3), parts that must not touch (wires included):
+  intended: Knob x Encoder_PEC12R: 1.19 (crush ribs on the shaft)
+  none
+
+Minimum clearances (mm):
+  SlideSwitches: volume under the plate outside the pickup cavity and the routed pocket, less 1 mm (mm3; > 0 only at the rounded pocket corners, see the next line): 4.798
+  SlideSwitches: top corners of the switch envelopes to the pocket wall (mm; the 1/4 in bit rounds the corners): 0.694
+  SlideSwitches: top edge of the envelopes to the pocket wall (mm): 1.000
+  pocket top edge to the centre of pickguard screw A (95.5, 181.2) (mm): 6.343
+  SlideSwitches: volume under the plate outside the traced pickup cavity (mm3; this is what you route): 19701.573
+  Pod: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  Diffuser: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  Switch_EG1201: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  Pickups bodies: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  BatteryCradle: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  REINS PCB corner outside the traced board cavity, worst (mm; trace good to about 1 mm, the fit test decides): 4.700
+  plastic inside the VL53L1X exclusion cones, both orientations (mm3, must be 0): 0.000
+  plastic inside the cones grown by 0.3 mm for board placement (mm3, must be 0): 0.000
+  VL53L1X sensor to the pod (nothing presses on it): 0.309
+  ToF board parts (Qwiic) to the pod base: 0.300
+  ToF board to the battery cradle: 2.506
+  aperture radius at the plate top: 6.756
+  ring LEDs to the diffuser: 0.404
+  ring LEDs to the pod: 0.800
+  ring board edge to the pod wall (radial): 0.650
+  ring bore to the iris (radial): 0.325
+  ring caps to the pod (groove): 0.315
+  diffuser skirt over the ring top (design 0.05): 0.140
+  LED top to the diffuser underside (air gap for even light): 2.000
+  XIAO to the hood: 0.200
+  XIAO to the plate (window): 0.434
+  OLED glass to the bezel: 0.254
+  OLED module pcb to the plate (0 = rests on the plate): 0.005
+  USB-C plug envelope 12.2 x 6.6 to the hood and plate: 0.000
+  USB-C plug envelope bottom above the lane floor: 0.300
+  knob to the control frame and hood: 0.500
+  knob to the plate: 0.500
+  knob to the button cap: 1.904
+  knob hub bottom above the encoder collar: 1.000
+  knob bottom above the plinth (push travel 0.4 +0.3): 1.000
+  encoder body to the plate underside: 2.010
+  button cap to the plate and frame (radial guide): 0.200
+  button cap flange under the plate at rest (up stop): 0.300
+  button cap to the B3SN body: 1.100
+  button cap to the encoder: 0.796
+  battery switch to the pod: 7.828
+  battery switch to the pickups: 20.853
+  pickup covers to the plate openings: 0.300
+  board PCB to the spacers (0 = clamped): 0.050
+  spacers to the plate (0 = clamped): 0.000
+  frame to the guard screw countersinks: 1.050
+  USB lane to the guard screw countersinks: 16.664
+  slide switches to the pickups: 7.170
+  slide switches to the pod: 12.311
+  slide switches to the battery cradle: 12.911
+  slide switches to each other (bodies): 2.150
+  slide switches to the pickguard screw holes in the wood: 6.343
+  slide switch screws (countersinks) to the slot chamfer: 3.740
+  lever at the end of its travel to the slot end (assumed lever and travel): 1.070
+  lever across to the slot side: 0.970
+  levers at both ends of travel to the plate (must be > 0): 0.936
+  caps to the plate, at rest and at both ends of travel: 0.514
+  caps at both ends of travel to the switch screw heads: 3.913
+  caps at both ends of travel to each other: 24.600
+  in-phase dots to the slot chamfer (wall, mm): 1.200
+  in-phase dots to the switch screw countersinks (wall, mm): 7.534
+  pickup screw holes to the pickup opening chamfer, at the plate top (wall, mm; carried over from v2): 0.269
+  pickup screw holes to the pickup opening, below the chamfer (wall, mm): 1.069
+  guard screw countersinks to the top of the edge bevel (wall, mm; carried over from v2): 0.246
+  routed pocket to the plate edge (the plate hides it): 9.341
+  routed pocket to the pickguard screw holes, wood left (hole 2 mm): 5.343
+  outline: area added outside the scan trace (mm2; the corners round off): 23.313
+  outline: area taken off inside the scan trace (mm2): 21.751
+  outline: largest step out of the scan trace (mm): 0.525
+  outline: largest step into the scan trace (mm): 0.680
+  guard screw holes to the plate edge, closest (mm; the scan trace gives the same within 0.2): 4.846
+  pickup cavity to the plate edge, closest (mm): 9.626
+  mark: stroke width, gap between rings, dot diameter (min, mm): 1.280
+  mark to the plate edge (mm): 9.637
+  mark to the pickup covers (mm; the opening chamfer is 1.1 nearer): 9.511
+  mark to the pickup screw heads (mm): 7.866
+  mark to the guard screw countersinks (mm): 20.026
+  mark to the slide caps at the end of travel and the switch screws (mm): 16.093
+  cell to the cradle (no squeeze; bumps touch): 0.000
+  battery cradle to the pickups: 5.230
+  ring wires to the pod (slot walls, base, tie bar): 0.150
+  ring wires to the diffuser: 1.518
+  ring wires to the plate: 3.869
+  ring wires to the ring caps and LEDs: 1.026
+  ring wires to each other: 0.227
+  ring wires to the ToF board: 4.257
+  ring wires to the battery cradle: 10.536
+  ring wires to the LiPo: 5.796
+  ring wire G to the cradle ceiling edge if it dropped straight down (no tie bar): 2.740
+  Qwiic plug and cable to the pod: 0.108
+  Qwiic plug and cable to the battery cradle: 3.008
+  Qwiic cable to the ring wires: 0.456
+  tie bar passage height (base to bar): 2.800
+  tie bar to the ToF board: 6.946
+
+Cable routes (mm), channel taken at Z -2.0, PH plugs left at Z -17.2; add slack yourself:
+  ring wires, pads to J3: 91
+  ToF Qwiic cable, plug to J1: 137
+  switch wires, EG1201 pins to J5: 76
+  LiPo lead, cradle opening to J2: 92
+  free route parts in the pickup cavity, clearance (mm):
+    ring wires to the battery switch 1.99, to the slide switches 73.85, to the pickups 21.17
+    Qwiic cable to the battery switch 1.49, to the slide switches 72.34, to the pickups 18.13
+    LiPo lead to the battery switch 1.74, to the slide switches 59.26, to the pickups 20.92
+  guitar wiring with the slide switches (add slack yourself):
+    bridge pickup leads to the bridge switch: 19
+    neck pickup leads to the neck switch: 29
+    jumper, neck switch output to the bridge switch output: 47
+    output lead, bridge switch to the passage at the bridge end (17, 70): 116
+    then about 45 from the passage to the volume pot
+  J1 middle pin at (136.3, 30.5); channel mouth (89.5, 75.5), board cavity edge at Y 55.0
+  J2 middle pin at (91.2, 27.5); channel mouth (89.5, 75.5), board cavity edge at Y 55.0
+  J3 middle pin at (84.1, 29.1); channel mouth (89.5, 75.5), board cavity edge at Y 55.0
+  J5 middle pin at (99.9, 26.6); channel mouth (89.5, 75.5), board cavity edge at Y 55.0
+
+Assembly paths (assembled frame, Z up):
+  Knob off the shaft, +Z: free
+  Board with the XIAO plugged in (OLED module unplugged first), down out of the plate, -Z: free
+  Hood off the plinth, +Z (board screws out): free
+  ControlFrame off the plate, +Z (board screws out, knob and hood off): free
+  PodBase down off the Pod, -Z: free
+  ButtonCap out of the plate, -Z (board off): free
+  Pod down, -Z: free
+  Diffuser down out of the plate, -Z (pod off): free
+  USB-C plug out along its axis by the 6.6 mm shell length: free
+  Battery cell out of the cradle sleeve, pod -y: free
+plate on the bed: 196.3 x 187.4 x 4.2 mm
+
+Routing: one pocket for both slide switches, X 33.8..128.8, Y 157.5..174.8 (95.0 x 17.3 mm, corners r 3.2), 21 mm deep; it overlaps the pickup cavity by 2.0 mm. From the pickguard screw at (95.547, 181.193): pocket top edge 6.3 below, pocket left end 61.8 left, right end 33.3 right.
+routing template: reins-pickguard-v3-routing-template.pdf
+routing template: reins-pickguard-v3-routing-template.dxf (mm, pickguard frame)

@@ -2,7 +2,7 @@
 
 A 3D printed pickguard for a Squier Mustang. The REINS guitar board hangs under it. The ToF sensor looks up through the middle of a 16 LED ring. The OLED, the encoder knob, the mute button and the USB-C port of the XIAO are on top. The battery and its switch are under the plate.
 
-This README describes version 2, the current design (`build_pickguard_v2.py`, folder `v2/`). Version 1 is in [V1.md](V1.md), for reference. A redesign (version 3) is in progress and is not in the repository yet.
+Most of this README describes version 2 (`build_pickguard_v2.py`, folder `v2/`). Version 3 replaces it on the guitar; it reuses everything of version 2 under the plate. Version 1 is in [V1.md](V1.md), for reference. Version 3, a calmer redesign with the two Mustang pickup slide switches, is at the end: [Version 3](#version-3-build_pickguard_v3py-folder-v3).
 
 ![Version 2 on the guitar](v2/renders/v2-on-guitar.png)
 
@@ -27,6 +27,7 @@ Version 2 has a clean top with no screw heads. One control island sits over the 
 - [Wiring and cables](#wiring-and-cables)
 - [Make the files again](#make-the-files-again)
 - [Files](#files)
+- [Version 3](#version-3-build_pickguard_v3py-folder-v3)
 
 ## Where the sizes come from
 
@@ -289,3 +290,227 @@ FC_EXIT=1 /Applications/FreeCAD.app/Contents/MacOS/FreeCAD build_pickguard_v2.py
 | `build_pickguard.py`, `stl/`, `renders/`, `reins-pickguard-flat.dxf`, `reins-pickguard-paper-template.pdf` | Version 1, see [V1.md](V1.md) |
 
 The script also writes `v2/reins-pickguard-v2-assembly.step` and the board STEP files in `v2/boards/`. They are large, so they are not in git. Run the script to make them.
+
+## Version 3 (`build_pickguard_v3.py`, folder `v3/`)
+
+Version 3 is version 2 with a calmer top and the two pickup slide switches of the original Mustang. The board, the pod, the stack and the printed parts under the plate stay as in version 2. The files of version 2 do not change.
+
+![Version 3 on the guitar](v3/renders/v3-on-guitar.png)
+
+![Version 2 and version 3](v3/renders/v2-vs-v3-top.png)
+
+![The two slide switches](v3/renders/v3-closeup-switches.png)
+
+More views in `v3/renders/`: `v3-top.png`, `v3-iso.png`, `v3-under.png`, `v3-exploded.png`, `v3-closeup-switches-top.png`, `v3-closeup-axis.png` (ring and battery switch), `v3-closeup-controls.png`, `v3-closeup-mark.png`, and the same pod, section and wire views as version 2.
+
+### Measure these first
+
+Measure these before you route the body or print the plate. Some sizes in this section are assumed.
+
+1. **The switch lever.** Its size across and along the slide, its height above the mounting face of the switch, and its travel from the middle to each end. The model assumes 5.5 x 6.0 mm, at least 9.03 mm high, and 6.5 mm each way.
+2. **The switch body.** Its length, width and depth with the lugs, the screw spacing (35.72 mm expected), and the lug map (see "Guitar wiring").
+3. **The switch screws.** Thread and length. The plate is 3.0 mm thick, so the screw must reach the switch frame through 3.0 mm.
+4. **The pickups.** How many conductors each one has. The covers are 70 x 18 mm, which is single coil size, so confirm the pickup type.
+5. **The body.** The depth of the pickup cavity and the body thickness at the pocket (the pocket is 21 mm deep).
+6. **The wire passage** from the pickup cavity to the control cavity, at about (17, 70).
+7. **The printed template.** Measure both 100 mm bars, across and up. Both must be 100 mm.
+
+### The pickup slide switches
+
+The stock 3-way mini toggle and its connector come out. Each pickup gets its own slide switch, as on a vintage Mustang. Each switch has three positions: on in phase, off, and on with reversed phase. Lever toward the neck is in phase, on both switches (the vintage convention). A small orange dot beside the neck end of each slot marks it.
+
+**The part.** A Switchcraft on/off/on slide switch for the Fender Mustang and Duo-Sonic (StewMac item 1232, also sold as Switchcraft 11D1049X). It is a DP3T switch with 8 lugs, 4 per pole. Buy two. Other Mustang on/off/on switches also fit the pocket, for example Allparts EP-0261 or Philadelphia Luthier SWC-0261 (about 42 x 13.5 x 16.4 mm). Check their screw spacing against the plate (35.72 mm).
+
+| Size | Value | Source |
+| --- | --- | --- |
+| Chassis with the lugs | 12.70 x 44.45 x 17.46 mm | StewMac |
+| Mounting screw spacing | 35.72 mm | StewMac |
+| Body cavity depth | 20.64 mm | StewMac |
+| Pickguard slot | 7.94 x 20.64 mm | StewMac |
+| Lever height | 9.53 mm, black plastic | StewMac |
+| Lever size | 5.5 mm along the slide, 6.0 mm across | assumed |
+| Lever travel | 6.5 mm each way from the middle | assumed |
+| Mounting screws | 4-40 oval head, from the top into the switch frame | assumed (they come with the switch) |
+
+**Where.** At (58.0, 167.5) for the bridge pickup and (104.6, 167.5) for the neck pickup. That is the vintage layout of `Sketch001` and of the Fender Mustang model, made symmetric about the ring axis, in the field where the REINS wordmark was. The row is 1 mm lower than the vintage one, so more wood stays round the pickguard screw above it. The slide runs along the strings. The mark )) (( stays on the bass horn.
+
+**On the plate.**
+
+1. A 7.94 x 20.64 mm slot per switch, with the 0.8 mm chamfer of every opening.
+2. Two countersunk holes per switch, the same size as the pickguard screw holes. Use black oval head screws, so the four screws match the nine pickguard screws.
+3. A 1.4 mm in-phase dot through the top ply, beside the neck end of each slot. It has 1.2 mm of plate to the slot chamfer.
+4. An orange cap on each lever (`reins-pg3-slide-caps.stl`), 9 x 9 mm, with a 1.2 mm grip line across the slide and a 1.6 mm roof. It floats 0.5 mm over the plate.
+
+**The cap fit depends on the assumed lever.** The cap socket is 5.7 x 6.2 mm and reaches to 9.63 mm above the mounting face. It fits only a lever of about 5.5 x 6.0 mm whose top is at least 9.03 mm above the mounting face, with 6.5 mm of travel each way. Measure the lever (size, height, travel), then set `SS_LEVER` and `SS_TRAVEL` at the top of the script and run it again. If the cap is loose, glue it on with a drop of CA glue. If it does not fit at all, leave it off: the stock black lever also works on the charcoal plate.
+
+| Check | Result |
+| --- | --- |
+| Lever at the end of its travel to the slot end | 1.07 mm |
+| Lever to the slot side | 0.97 mm |
+| Caps to the plate, at rest and at both ends | 0.51 mm |
+| Caps at the ends of travel to the switch screw heads | 3.9 mm |
+| Switch screw countersinks to the slot chamfer | 3.7 mm of plain plate |
+| In-phase dots to the slot chamfer, to the screw countersinks | 1.2 mm, 7.5 mm |
+| Switches to the pickups | 7.2 mm |
+| Switches to the pod, to the battery cradle | 12.3 mm, 12.9 mm |
+| Switch bodies to each other | 2.2 mm (one pocket holds both) |
+| Switches to the pickguard screw holes in the wood | 6.3 mm |
+| Mark to the caps and the switch screws | 16.1 mm |
+| Switch envelopes to the pocket wall: top edge, top corners | 1.0 mm, 0.7 mm (the bit rounds the corners) |
+
+The pod screw ear went back to 90 degrees and the battery cradle is as in version 2.
+
+### What to route in the body
+
+The body has solid wood under the switches. Route one pocket for both switches, open to the pickup cavity. The wires then go straight from the switches into the pickup cavity. You need no separate channel.
+
+| | Value |
+| --- | --- |
+| Pocket | 95.0 x 17.3 mm, corners r 3.2: a 6 mm or 1/4 in bit. A 1/2 in bit is too big: its corners would cut into the switch envelope |
+| Depth | 21 mm (the switch needs 20.64) |
+| Position in the pickguard frame | X 33.8 to 128.8, Y 157.5 to 174.8 |
+| From pickguard screw A (the screw in the middle of the bass edge, at 95.5, 181.2) | top edge 6.3 mm below the centre of A, left end 61.8 mm to the left, right end 33.3 mm to the right |
+| Overlap with the pickup cavity | 2.0 mm, so no thin wall is left |
+| Wood left round the screw hole of A (2 mm pilot) | 5.3 mm |
+| Pocket to the plate edge | 9.3 mm (the plate hides it) |
+
+From the pickup cavity to the control cavity, use the stock passage at the bridge end, on the treble side (about X 17, Y 70: the black wire leaves the cavity there on IMG_2408). The template marks it. Check that it is there and that a 6 mm bundle passes. If not, drill a 6 mm hole there to the control cavity.
+
+The 1:1 template has the pocket, the pickguard outline, the nine screw holes, the traced pickup cavity and the wire passage:
+
+- `v3/reins-pickguard-v3-routing-template.pdf`: print on A4 landscape at 100 %, no "fit to page". Both bars, across and up, must measure 100 mm. Lay it on the body with the nine crosses on the nine screw holes, tape it, and mark the pocket.
+- `v3/reins-pickguard-v3-routing-template.dxf`: the same in mm, in the pickguard frame, one layer per item, for a CNC or for a router template.
+
+How to route:
+
+1. Take the pickups and the stock toggle out first, and cover the pickup cavity edges with tape.
+2. Make a router template from 6 mm MDF or plywood with the DXF. If you use a guide bushing, make the template opening larger by the bushing offset: (bushing diameter minus bit diameter) / 2 on every side.
+3. Drill out most of the waste first with a Forstner bit, to about 20 mm deep. A long reach 1/4 in pattern bit flexes, so let it only clean the walls.
+4. Route in passes of 3 mm or less, to 21 mm.
+5. Shield the pocket: line it with copper tape and bond the tape to the foil of the pickup cavity (solder a short wire or overlap the tapes with conductive adhesive). Connect the shield to ground.
+
+### Guitar wiring
+
+Each switch is a DP3T switch with two poles, A and B. Each pole has a common lug C and three throws: T1 (lever toward the neck), T2 (lever in the middle) and T3 (lever toward the bridge). Before you solder, find C and T1 to T3 on each pole with a meter, in each of the three positions.
+
+```
+ bridge pickup --(lead 1, lead 2)--> bridge switch --+
+                                                     +--(hot, ground)--> volume pot input, pot ground --> output jack
+ neck pickup  --(lead 1, lead 2)--> neck switch    --+
+
+ one switch, lug by function (8 lugs, 2 poles):
+
+   pole A:  A-C  = pickup lead 1        pole B:  B-C  = pickup lead 2
+            A-T1 = output hot                    B-T1 = output ground
+            A-T2 = empty                         B-T2 = empty
+            A-T3 = output ground                 B-T3 = output hot
+
+   lever toward the neck (T1):    lead 1 = hot,    lead 2 = ground    in phase
+   lever in the middle (T2):      nothing connected                   off
+   lever toward the bridge (T3):  lead 2 = hot,    lead 1 = ground    reversed phase
+```
+
+1. Take out the stock 3-way toggle, its connector and its wires to the controls. The REINS board sits in that cavity now.
+2. Wire each switch as in the drawing. Join A-T1 and B-T3 (output hot), and join B-T1 and A-T3 (output ground). Both T2 lugs stay empty, which gives off.
+3. Join the two switch outputs (hot to hot, ground to ground) at the bridge switch with a twisted pair, 70 mm. One shielded lead goes on to the volume pot input. Its shield is the ground.
+4. Both switches in phase gives both pickups in parallel. One switch reversed gives the thin out of phase sound of a Mustang.
+5. Phase reverse needs both coil ends free of the base plate and the shield. Use 4-conductor humbuckers: join and insulate the series link pair, take the two outer coil ends to the switch, and solder the bare shield straight to ground, never through the switch. With 2-conductor pickups, either separate the coil start from the base plate inside the pickup and add a ground wire, or wire only on/off.
+6. Two humbuckers out of phase still cancel hum, because each humbucker cancels hum by itself.
+
+| Wire | Length on the model | Make it |
+| --- | --- | --- |
+| Bridge pickup leads to the bridge switch | 19 mm | the stock leads (shorten) |
+| Neck pickup leads to the neck switch | 29 mm | the stock leads (shorten) |
+| Jumper, neck switch output to the bridge switch output | 47 mm | 70 mm, a twisted pair |
+| Output lead, bridge switch to the passage at the bridge end | 116 mm | 200 mm shielded, with the 45 mm on to the volume pot |
+
+### The REINS cables
+
+| Cable | Version 2 | Version 3 | Make it |
+| --- | --- | --- | --- |
+| (a) ring, pads to J3 | 89 mm | 91 mm | 110 mm |
+| (b) ToF Qwiic, plug to J1 | 137 mm | 137 mm | cut a 200 mm Qwiic cable at 165 mm |
+| (c) LiPo lead, cradle to J2 | 91 mm | 92 mm | 110 mm or more |
+| (d) switch, EG1201 to J5 | 76 mm | 76 mm | 100 mm |
+
+The cables from the pod now pass the battery switch on its neck side and below its body, then rise into the channel. The wire slot in the pod aims 4 mm to the neck side of the channel axis for that.
+
+### What else changed and why
+
+1. **No wordmark.** Only the mark )) (( is left (`ref/logo/reins-b-mark.svg`, the same file as on the site). It is 19.8 x 10.2 mm, at 0.32 mm per SVG unit, as on the heat case lid. Strokes 1.92 mm, gaps between the rings 1.28 mm, dots 2.56 mm, all 1.2 mm or more. It sits alone on the bass horn at (150, 160), parallel to the strings, upright for the audience. It has 9.6 mm to the plate edge, 9.5 mm to the neck pickup cover and 7.9 mm to the nearest screw head.
+2. **One axis.** The ring and the battery switch stand on one line across the strings, at X 81.3. The two slide switches sit symmetric about that line. The battery switch moved from (96, 81) to (81.3, 81).
+3. **Clean outline.** The outline is the scan trace without its small wobbles, with the same small rounding on every corner. It is never more than 0.53 mm outside or 0.68 mm inside the scan trace. The screw holes keep at least 4.8 mm to the edge, the pickup cavity 9.6 mm.
+4. **One edge.** Every visible opening and the top edges of the island have the same 45 degree chamfer of 0.8 mm.
+5. **Less orange.** The top ply is 1.0 mm (it was 0.8). The chamfers and the USB lane floor stay charcoal, so the orange USB lane is gone. Orange shows only where it means something: the edge line, the mark, the ON dot, the in-phase dots, the knob, the mute button and the switch caps. The edge bevel is 1.6 mm, so the orange line in the edge is a full 0.6 mm band. The USB-C plug has 0.3 mm over the lane floor now (it was 0.6).
+6. **Black screws.** Use black screws for the nine pickguard screws, the four pickup screws and the four switch screws. On a charcoal plate they almost disappear. The countersinks are 6.0 mm now (they were 6.6): a #4 oval head is 5.7 mm across. The pickup screw holes have no chamfer now, because the pickup screws have pan heads.
+
+I kept the three plies. The edge line and the mark need the orange ply, and two filament changes are not hard.
+
+### Clearances (from `v3/checks.txt`)
+
+All version 2 checks run again and pass. Besides the switch checks above, these numbers changed:
+
+| Check | Version 2 | Version 3 |
+| --- | --- | --- |
+| Printed parts touching bought parts or each other | none | none (only the knob crush ribs, by design) |
+| Battery switch to the pod, to the pickups | 8.7, 7.0 mm | 7.8, 20.9 mm |
+| Cables in the pickup cavity to the battery switch (ring wires, Qwiic, LiPo lead) | | 2.0, 1.5, 1.7 mm |
+| Qwiic plug and cable to the pod | 0.14 mm | 0.11 mm |
+| Ring wires to the ToF board, tie bar to the ToF board | 4.5, 8.1 mm | 4.3, 6.9 mm |
+| Ring wire G to the cradle if it dropped straight down | 2.9 mm | 2.7 mm |
+
+Two thin walls come from version 2. They sit at the stock screw holes, so I cannot move them, and the screw heads cover both:
+
+| Wall | Version 3 |
+| --- | --- |
+| Pickup screw hole to the pickup opening: at the plate top (in the 0.8 chamfer), below the chamfer | 0.27 mm, 1.07 mm |
+| Pickguard screw countersink to the top of the edge bevel | 0.25 mm |
+
+The countersink cannot be smaller than the 5.7 mm screw head, and a bevel narrow enough to reach 1.2 mm would lose the orange edge line. So they stay. The plastic there carries no load: the screw head presses on the countersink, not on the wall.
+
+### Printing
+
+The print rules of version 2 still hold: no supports, every overhang 45 degrees or steeper or a short straight bridge. I checked the STL files again. The plate has the same kinds of bridges as version 2 (the USB lane roof and the mark and dot grooves, now bridged by the first charcoal layer over them). The slide caps print top face down; the only bridge is the 1.2 mm grip line. The bgcode files in `v3/print/` are sliced from the current STL files with the version 2 settings and supports off.
+
+The plate needs new filament changes, because the top ply is thicker. From the bed: 0 to 1.0 mm charcoal, 1.0 to 1.6 mm orange, 1.6 mm to the end charcoal. `reins-pg3-plate-coreone.bgcode` has the two M600 changes at the layers that start at 1.0 mm and 1.6 mm (checked in an ASCII copy of the file). Do not use the version 2 plate file for version 3.
+
+| File in `v3/stl/` | Part | Filament | On the bed | CORE One | MINI IS | Weight |
+| --- | --- | --- | --- | --- | --- | --- |
+| `reins-pg3-plate.stl` | Plate | charcoal, orange, charcoal | top face down | 1 h 33 min | does not fit | 58 g |
+| `reins-pg3-slide-caps.stl` | 2 SlideCaps | orange | top face down | 6 min | 12 min | 0.9 g |
+| `reins-pg3-board-spacers.stl` | 4 BoardSpacers | any | standing | 4 min | 7 min | 0.5 g |
+| `reins-pg3-control-frame.stl` | ControlFrame | charcoal | plinth down | 7 min | 15 min | 2.8 g |
+| `reins-pg3-hood.stl` | Hood | charcoal | top face down | 8 min | 16 min | 3.3 g |
+| `reins-pg3-knob.stl` | Knob | orange | top face down | 8 min | 15 min | 1.1 g |
+| `reins-pg3-button-cap.stl` | ButtonCap | orange | top face down | 3 min | 5 min | 0.3 g |
+| `reins-pg3-pod.stl` | Pod | black, matte | base side down | 11 min | 23 min | 5.5 g |
+| `reins-pg3-pod-base.stl` | PodBase | black, matte | base top down | 8 min | 16 min | 3.5 g |
+| `reins-pg3-diffuser.stl` | Diffuser | natural PETG or white PLA | top face down | 6 min | 12 min | 2.4 g |
+| `reins-pg3-battery-cradle.stl` | BatteryCradle | black | floor down | 13 min | 24 min | 3.6 g |
+| `reins-pg3-fit-test.stl` | fit test | any | sheet down | 46 min | does not fit | 22 g |
+
+The plate is 196.3 x 187.4 x 4.2 mm on the bed. It fits only the CORE One. Print the fit test again: it has the switch slots and screw holes. After you route the pocket, put the switches in from below and check that they drop in.
+
+### Bought parts, changes to version 2
+
+| Qty | Part | Use |
+| --- | --- | --- |
+| 2 | Switchcraft on/off/on Mustang slide switch (StewMac 1232), or another Mustang on/off/on switch with 35.72 mm screw spacing | pickup selectors |
+| 4 | 4-40 oval head screw, black, long enough for the 3.0 mm plate (or the ones that come with the switches) | switches to the plate |
+| 9 | #4 oval head pickguard screw, black | plate to the body |
+| 4 | pickup screw, black, the stock size | pickups |
+| 1 | about 70 mm of twisted pair and 200 mm of shielded lead | switch jumper and output |
+| 1 | copper shielding tape | pocket shield |
+
+The stock 3-way toggle is no longer used.
+
+### Make the files again
+
+```
+cd midiguitar/reins-guitar/pickguard
+FC_EXIT=1 /Applications/FreeCAD.app/Contents/MacOS/FreeCAD build_pickguard_v3.py
+```
+
+The script writes everything in `v3/`, also the routing template. At the end it starts `v3/tools/render_crops_v3.py` in a new FreeCAD process for the crop close-ups (switches, axis, mark), because those came out blank now and then inside the long run. That script retries each image until it is not blank. You can also run it alone: `/Applications/FreeCAD.app/Contents/MacOS/FreeCAD v3/tools/render_crops_v3.py`.
+
+`v3/ref/`, `v3/boards/`, `v3/web/boards/` and `v3/web/body_outline.json` are copies of the same files in `v2/`. The web export in `v3/web/` has the same format as version 2, so `reins-site/tools/pickguard-v2.mjs` reads it. It has five more parts: SlideSwitches, SlideCaps, SlideScrews, GuardScrews and PickupScrews.

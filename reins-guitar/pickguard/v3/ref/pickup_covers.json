@@ -1,0 +1,30 @@
+{
+ "covers": {
+  "bridge": {
+   "dark_centre": [
+    39.07,
+    115.95
+   ],
+   "dark_angle_deg": 80.68,
+   "screw_mid": [
+    39.95,
+    116.22
+   ],
+   "screw_angle_deg": 80.5
+  },
+  "neck": {
+   "dark_centre": [
+    125.19,
+    117.66
+   ],
+   "dark_angle_deg": 80.53,
+   "screw_mid": [
+    124.54,
+    117.47
+   ],
+   "screw_angle_deg": 80.85
+  }
+ },
+ "sketch_openings_angle_deg": 78.13,
+ "note": "The dark cover (top face plus the side seen in perspective) lies parallel to its screws within 0.3 deg. A 70 x 18 mm obround centred between the screws matches the visible top face."
+}
