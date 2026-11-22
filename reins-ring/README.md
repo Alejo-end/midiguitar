@@ -1,6 +1,8 @@
 # REINS LED ring (replaces the Adafruit NeoPixel Ring 16)
 
-This is a 2 layer JLCPCB board with 16 WS2812B LEDs (5050, LCSC C114586) and one 100 nF cap per LED (LCSC C14663). JLCPCB solders all 32 parts, on both sides. You solder three wires to round pads on the flat back face. Nothing hides these pads.
+This is a 2 layer JLCPCB board with 16 WS2812B LEDs (5050) on the top and one 100 nF 0603 cap per LED (LCSC C14663) on the back. JLCPCB solders the 16 LEDs. You solder the 16 caps and three wires to round pads on the flat back face. Nothing hides these pads.
+
+The board file names the LED as LCSC C114586. JLCPCB no longer offers that part, so `export_jlc.py` writes C52917433 (Worldsemi WS2812B-V6, same SMD5050-4P package) into the order files (`SUBST`). Check the pin order in its data sheet before you approve: 1 VDD, 2 DOUT, 3 VSS, 4 DIN.
 
 ![Top](renders/ring-top.png)
 
@@ -43,16 +45,16 @@ This is a 2 layer JLCPCB board with 16 WS2812B LEDs (5050, LCSC C114586) and one
 | --- | --- |
 | `make_ring.py` | Writes `reins-ring.kicad_pcb` and `reins-ring.kicad_pro`. There is no schematic: this script holds the netlist |
 | `drc.sh` | Runs the KiCad DRC on a temp copy with refilled zones |
-| `export_jlc.py` | Writes `fab/jlc/reins-ring/` with the Gerber zip, the BOM and the CPL |
+| `export_jlc.py` | Writes `fab/jlc/reins-ring/` with the Gerber zip, the BOM and the CPL for both sides, and `-top` BOM and CPL files with the 16 LEDs only |
 | `renders/` | Top and bottom pictures |
 
 Run the two scripts with the KiCad Python (`/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/3.9/bin/python3`).
 
 ## Order notes
 
-1. Choose PCB Assembly on both sides. The LEDs are on the top and the caps are on the bottom. The wire pads are plain copper and need no part.
+1. Choose Economic PCB Assembly, top side, and upload `reins-ring-top-bom.csv` and `reins-ring-top-cpl.csv`. Economic assembly places one side only, and Standard assembly needs a board of at least 70 x 70 mm. Solder the 16 caps (100 nF 0603) on the back by hand, across the two copper bands. The wire pads are plain copper and need no part.
 2. Choose 0.8 mm thickness. The Gerber files do not carry the thickness.
-3. Make sure that the pin 1 of each LED matches the placement picture from JLCPCB. Pin 1 (VDD) is the pad on the outer edge, on the counter clockwise side. The DIN pad is on the outer edge, on the clockwise side. Do not approve if one LED differs. I did not confirm the rotation that JLCPCB expects for C114586, so `ROT` in `export_jlc.py` is 0 [E]. If every LED is turned the same wrong way, set the correction there and export again.
+3. Make sure that the pin 1 of each LED matches the placement picture from JLCPCB. Pin 1 (VDD) is the pad on the outer edge, on the counter clockwise side. The DIN pad is on the outer edge, on the clockwise side. Do not approve if one LED differs. The rotation that JLCPCB expects for C52917433 is not confirmed, so `ROT` in `export_jlc.py` is 0 [E]. If every LED is turned the same wrong way, set the correction there and export again.
 4. The caps are symmetric parts, so a 180 degree error does not matter.
 
 ## DRC [M]
@@ -61,4 +63,4 @@ The KiCad DRC on the refilled board shows 0 violations and no unconnected items,
 
 ## Cost (estimate, not a quote)
 
-I did not get a JLCPCB quote. The LED is about 6 cents each in a cached LCSC listing [R], so 16 LEDs are about 1 euro. The rest is the board, the one time assembly setup fee and shipping. If C114586 or C14663 is an Extended part, JLCPCB adds a fee per part type. Put the board in the cart to see the real price. A ring ordered alone is probably not cheaper than the Adafruit ring for one unit. It becomes cheaper in a batch, or when you add it to another JLCPCB order that you already pay for.
+I did not get a JLCPCB quote. The LED is about 6 cents each in a cached LCSC listing [R], so 16 LEDs are about 1 euro. The rest is the board, the one time assembly setup fee and shipping. If the LED or C14663 is an Extended part, JLCPCB adds a fee per part type. Put the board in the cart to see the real price. A ring ordered alone is probably not cheaper than the Adafruit ring for one unit. It becomes cheaper in a batch, or when you add it to another JLCPCB order that you already pay for.

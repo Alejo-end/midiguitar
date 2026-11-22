@@ -6,6 +6,7 @@
 #   reins-ring-gerbers.zip   Gerbers and drill files: upload this as the PCB
 #   reins-ring-bom.csv       Comment, Designator, Footprint, LCSC: the parts JLCPCB assembles
 #   reins-ring-cpl.csv       Designator, Mid X, Mid Y, Layer, Rotation: where they go
+#   reins-ring-top-bom.csv, reins-ring-top-cpl.csv   the same for the top side only (Economic assembly)
 #
 # LED and cap rotation: JLCPCB's part rotation can differ from KiCad's. ROT holds a correction per LCSC
 # part, in degrees. The values are 0 because nobody has checked them yet. After the upload, compare the
@@ -18,7 +19,14 @@ import pcbnew
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLI = '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli'
 LAYERS = 'F.Cu,B.Cu,F.Paste,B.Paste,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts'
-ROT = {'C114586': 0, 'C14663': 0}
+ROT = {'C114586': 0, 'C52917433': 0, 'C14663': 0}
+# LCSC parts that JLCPCB no longer offers, and the part that replaces them in the order files.
+# C114586 (WS2812B-B/W) is not in the JLCPCB assembly library on 2026-11-21. C52917433 is the Worldsemi
+# WS2812B-V6 in the same SMD5050-4P package. The WS2812B pin order is 1 VDD, 2 DOUT, 3 VSS, 4 DIN: confirm it in the V6 data sheet
+# on the parts page before you approve.
+SUBST = {'C114586': 'C52917433'}
+# JLCPCB Economic assembly places one side only. The -top files hold the 16 LEDs; you solder the
+# 16 bottom caps by hand. The full files (both sides) need Standard assembly.
 board = 'reins-ring'
 
 
@@ -43,9 +51,9 @@ groups, rows = {}, []
 for fp in b.GetFootprints():
     if not fp.HasField('LCSC') or not fp.GetFieldText('LCSC'):
         continue
-    lcsc = fp.GetFieldText('LCSC')
+    lcsc = SUBST.get(fp.GetFieldText('LCSC'), fp.GetFieldText('LCSC'))
     key = (fp.GetValue(), fp.GetFPID().GetLibItemName().wx_str(), lcsc)
-    groups.setdefault(key, []).append(fp.GetReference())
+    groups.setdefault(key, []).append((fp.GetReference(), fp.IsFlipped()))
     pos = fp.GetPosition()
     bottom = fp.IsFlipped()
     rot = fp.GetOrientationDegrees()
@@ -53,14 +61,21 @@ for fp in b.GetFootprints():
     jrot = (180 - rot + c) % 360 if bottom else (rot + c) % 360
     rows.append([fp.GetReference(), '%.3fmm' % pcbnew.ToMM(pos.x), '%.3fmm' % -pcbnew.ToMM(pos.y),
                  'Bottom' if bottom else 'Top', '%.1f' % jrot])
-with open(os.path.join(out, board + '-bom.csv'), 'w', newline='') as fh:
-    w = csv.writer(fh)
-    w.writerow(['Comment', 'Designator', 'Footprint', 'LCSC'])
-    for (val, foot, lcsc), refs in sorted(groups.items()):
-        w.writerow([val, ','.join(sorted(refs, key=lambda r: (r.rstrip('0123456789'), int(r.lstrip('ABCDEFGHIJKLMNOPQRSTUVWXYZ'))))), foot, lcsc])
-with open(os.path.join(out, board + '-cpl.csv'), 'w', newline='') as fh:
-    w = csv.writer(fh)
-    w.writerow(['Designator', 'Mid X', 'Mid Y', 'Layer', 'Rotation'])
-    w.writerows(sorted(rows, key=lambda r: (r[0].rstrip('0123456789'), int(r[0].lstrip('ABCDEFGHIJKLMNOPQRSTUVWXYZ')))))
+def num(r):
+    return (r.rstrip('0123456789'), int(r.lstrip('ABCDEFGHIJKLMNOPQRSTUVWXYZ')))
+
+
+for suffix, keep in (('', lambda bottom: True), ('-top', lambda bottom: not bottom)):
+    with open(os.path.join(out, board + suffix + '-bom.csv'), 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(['Comment', 'Designator', 'Footprint', 'LCSC'])
+        for (val, foot, lcsc), refs in sorted(groups.items()):
+            refs = [r for r, bottom in refs if keep(bottom)]
+            if refs:
+                w.writerow([val, ','.join(sorted(refs, key=num)), foot, lcsc])
+    with open(os.path.join(out, board + suffix + '-cpl.csv'), 'w', newline='') as fh:
+        w = csv.writer(fh)
+        w.writerow(['Designator', 'Mid X', 'Mid Y', 'Layer', 'Rotation'])
+        w.writerows(sorted([r for r in rows if keep(r[3] == 'Bottom')], key=lambda r: num(r[0])))
 print('%s: %d parts for assembly (%d bottom), files in %s' % (
     board, len(rows), sum(1 for r in rows if r[3] == 'Bottom'), os.path.relpath(out, HERE)))
