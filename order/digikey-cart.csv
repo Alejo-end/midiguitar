@@ -1,0 +1,8 @@
+Manufacturer Part Number,Manufacturer,Quantity,Customer Reference,DigiKey PN,Unit USD,Status 2026-11-21,Use
+PHR-3,JST,4,REINS J3,455-1126-ND,0.11,in cart,Ring cable housing on guitar J3 plus spares
+PHR-4,JST,3,REINS J1,455-1164-ND,0.10,in cart,ToF cable housing on guitar J1 plus spares
+PHR-2,JST,2,REINS J2,455-1165-ND,0.10,in cart,LiPo plug if the cell has bare wires or the wrong polarity
+EG1201,E-Switch,2,REINS J5,EG1901-ND,0.84,in cart,Battery slide switch under the pickguard v2 plate
+CC0603KRX7R9BB104,Yageo,25,REINS 100nF,311-1344-1-ND,0.08,in cart,16 ring caps plus guitar C1 C2 C4 C5 plus spares (CL10B104KB8NNNC is on backorder)
+SPH-002T-P0.5S,JST,50,REINS crimps,,,not added: cut tape PN not found without the search page,Crimp contacts for PHR-2/3/4/7
+1578,Adafruit,1,REINS LiPo,1528-1841-ND,,not added: DigiKey cannot ship LiPo cells to Finland,500 mAh 1S LiPo 36x29x4.75 mm JST PH
