@@ -43,7 +43,7 @@ Solder each wire straight down onto its pad (the wire stands at a right angle to
 | Length to make | cut the 200 mm cable 165 mm from the plug you keep |
 | Ready-made | a plain Qwiic cable does not fit J1: J1 is JST PH 2.0 mm, Qwiic is JST SH 1.0 mm. Use one Qwiic end and crimp the other |
 
-| J1 pin | Net | Qwiic wire colour | Qwiic pin |
+| J1 pin | Net | Qwiic wire color | Qwiic pin |
 | --- | --- | --- | --- |
 | 1 | GND | black | 1 |
 | 2 | 3V3 | red | 2 |

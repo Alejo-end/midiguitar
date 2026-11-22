@@ -1,0 +1,8 @@
+{
+ "x0": -120.0,
+ "x1": 300.0,
+ "y0": -110.0,
+ "y1": 290.0,
+ "px_per_mm": 4.0,
+ "note": "Pixel (0, 0) is the top left corner at (x0, y1). Image up = +Y (bass side), right = +X (neck)."
+}

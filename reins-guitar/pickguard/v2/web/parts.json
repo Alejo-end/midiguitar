@@ -1,0 +1,344 @@
+{
+ "units": "mm",
+ "frame": "Guitar frame: X towards the neck, Y towards the bass side, Z up, 0 on the body top (underside of the plate). The same frame as Sketch001 of cad-midiguitar.FCStd.",
+ "threejs": "Put all STLs in one group with rotation.x = -PI/2 (Z up to Y up).",
+ "plate_bbox": {
+  "min": [
+   -6.66,
+   2.039,
+   -1.2
+  ],
+  "max": [
+   190.129,
+   189.619,
+   3.0
+  ],
+  "center": [
+   91.734,
+   95.829,
+   0.9
+  ]
+ },
+ "plate_plies": [
+  {
+   "file": "Plate_PlyBottom.stl",
+   "color": "#2B2E33"
+  },
+  {
+   "file": "Plate_PlyMiddle.stl",
+   "color": "#F06B14"
+  },
+  {
+   "file": "Plate_PlyTop.stl",
+   "color": "#2B2E33"
+  }
+ ],
+ "parts": [
+  {
+   "name": "Pickups",
+   "file": "Pickups.stl",
+   "color": "#0F0F0F",
+   "material": "stock pickup covers, measured positions (hide on the site if wanted)",
+   "printed": false,
+   "order": 0,
+   "explode": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "Plate",
+   "file": "Plate.stl",
+   "color": "#2B2E33",
+   "material": "PLA or PETG in three plies: charcoal, orange, charcoal",
+   "printed": true,
+   "order": 1,
+   "explode": [
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "name": "ButtonCap",
+   "file": "ButtonCap.stl",
+   "color": "#F06B14",
+   "material": "PLA, orange",
+   "printed": true,
+   "order": 2,
+   "explode": [
+    0,
+    0,
+    -26
+   ]
+  },
+  {
+   "name": "ControlFrame",
+   "file": "ControlFrame.stl",
+   "color": "#2B2E33",
+   "material": "PLA, charcoal, matte",
+   "printed": true,
+   "order": 3,
+   "explode": [
+    0,
+    0,
+    30
+   ]
+  },
+  {
+   "name": "Hood",
+   "file": "Hood.stl",
+   "color": "#2B2E33",
+   "material": "PLA, charcoal, matte",
+   "printed": true,
+   "order": 3,
+   "explode": [
+    0,
+    0,
+    40
+   ]
+  },
+  {
+   "name": "BoardSpacers",
+   "file": "BoardSpacers.stl",
+   "color": "#595C61",
+   "material": "PLA, any colour, 4 tubes",
+   "printed": true,
+   "order": 4,
+   "explode": [
+    0,
+    0,
+    -20
+   ]
+  },
+  {
+   "name": "Encoder_PEC12R",
+   "file": "Encoder_PEC12R.stl",
+   "color": "#8C9199",
+   "material": "Bourns PEC12R, 15 mm shaft, simple model",
+   "printed": false,
+   "order": 4,
+   "explode": [
+    0,
+    0,
+    -40
+   ]
+  },
+  {
+   "name": "Button_B3SN",
+   "file": "Button_B3SN.stl",
+   "color": "#404045",
+   "material": "Omron B3SN-3012, simple model",
+   "printed": false,
+   "order": 4,
+   "explode": [
+    0,
+    0,
+    -40
+   ]
+  },
+  {
+   "name": "Knob",
+   "file": "Knob.stl",
+   "color": "#F06B14",
+   "material": "PLA, orange",
+   "printed": true,
+   "order": 5,
+   "explode": [
+    0,
+    0,
+    52
+   ]
+  },
+  {
+   "name": "Switch_EG1201",
+   "file": "Switch_EG1201.stl",
+   "color": "#595C61",
+   "material": "E-Switch EG1201, simple model",
+   "printed": false,
+   "order": 6,
+   "explode": [
+    0,
+    0,
+    -22
+   ]
+  },
+  {
+   "name": "Diffuser",
+   "file": "Diffuser.stl",
+   "color": "#F2F0E6",
+   "material": "PETG natural or PLA white, translucent",
+   "printed": true,
+   "order": 7,
+   "explode": [
+    0,
+    0,
+    -16
+   ]
+  },
+  {
+   "name": "Pod",
+   "file": "Pod.stl",
+   "color": "#0D0D0E",
+   "material": "PLA, black, matte",
+   "printed": true,
+   "order": 9,
+   "explode": [
+    0,
+    0,
+    -44
+   ]
+  },
+  {
+   "name": "PodBase",
+   "file": "PodBase.stl",
+   "color": "#1A1A1C",
+   "material": "PLA, black, matte",
+   "printed": true,
+   "order": 9,
+   "explode": [
+    0,
+    0,
+    -52
+   ]
+  },
+  {
+   "name": "ToF_Board",
+   "file": "ToF_Board.stl",
+   "color": "#BF1A14",
+   "material": "SparkFun SEN-14722 (VL53L1X), simple model",
+   "printed": false,
+   "order": 10,
+   "explode": [
+    0,
+    0,
+    -58
+   ]
+  },
+  {
+   "name": "LiPo",
+   "file": "LiPo.stl",
+   "color": "#9EA3AD",
+   "material": "1S LiPo 36 x 29 x 4.75 (Adafruit 1578 class)",
+   "printed": false,
+   "order": 11,
+   "explode": [
+    0,
+    0,
+    -78
+   ]
+  },
+  {
+   "name": "BatteryCradle",
+   "file": "BatteryCradle.stl",
+   "color": "#1F1F21",
+   "material": "PLA or PETG, black",
+   "printed": true,
+   "order": 12,
+   "explode": [
+    0,
+    0,
+    -88
+   ]
+  },
+  {
+   "name": "Toggle",
+   "file": "Toggle.stl",
+   "color": "#BFC2C7",
+   "material": "stock 3-way mini toggle, envelope only",
+   "printed": false,
+   "order": 13,
+   "explode": [
+    0,
+    0,
+    24
+   ]
+  }
+ ],
+ "boards": [
+  {
+   "name": "Board_Guitar",
+   "kicad": "midiguitar/reins-guitar/reins-guitar.kicad_pcb",
+   "glb": "boards/reins-guitar.glb",
+   "order": 4,
+   "explode": [
+    0,
+    0,
+    -40
+   ],
+   "color_pcb": "#111214",
+   "kicad_to_frame": "p = (x, -y); rotate p by 167.5000 deg about Z; add (234.1939, -121.3744); Z = z + -9.6100",
+   "matrix_kicad_mm_to_frame_rowmajor": [
+    [
+     -0.976296,
+     0.21644,
+     0,
+     234.1939
+    ],
+    [
+     0.21644,
+     0.976296,
+     0,
+     -121.3744
+    ],
+    [
+     0,
+     0,
+     1,
+     -9.61
+    ],
+    [
+     0,
+     0,
+     0,
+     1
+    ]
+   ],
+   "module_lift_mm": {
+    "M1 (XIAO)": 1.97,
+    "J4 (OLED)": 1.92
+   }
+  },
+  {
+   "name": "Board_Ring",
+   "kicad": "midiguitar/reins-ring/reins-ring.kicad_pcb",
+   "glb": "boards/reins-ring.glb",
+   "order": 8,
+   "explode": [
+    0,
+    0,
+    -30
+   ],
+   "color_pcb": "#111214",
+   "kicad_to_frame": "p = (x - 100, -(y - 100)); rotate p by -80.8177 deg about Z; add (81.312, 117.374); Z = z + -3.0000",
+   "matrix_kicad_mm_to_frame_rowmajor": [
+    [
+     0.159576,
+     -0.987186,
+     0,
+     164.073
+    ],
+    [
+     -0.987186,
+     -0.159576,
+     0,
+     232.0502
+    ],
+    [
+     0,
+     0,
+     1,
+     -3.0
+    ],
+    [
+     0,
+     0,
+     0,
+     1
+    ]
+   ]
+  }
+ ],
+ "body_outline": "body_outline.json"
+}

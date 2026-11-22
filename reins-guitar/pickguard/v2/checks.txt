@@ -1,0 +1,97 @@
+stack: PCB top -8.10, XIAO underside 3.00, XIAO top 7.41, USB axis 5.80, OLED module underside 3.01 (stack would put it at 2.94), glass top 5.51
+encoder PEC12R shaft 15.0 mm: collar top 0.00, flat 1.90..6.90; hood top 10.30, bezel top 7.41, plinth top 4.20
+pod: ring -3.00..-2.20, LED top -0.60, diffuser 1.40..3.00, base -5.40..-4.20, ToF top -8.60, sensor top -7.04
+board placement: rotate 167.500 deg about Z, then move (234.194, -121.374, -9.610); wire slot angle in the pod frame -75.25 deg
+logo: reins-b-lockup.svg at 0.38 mm per unit, 76.6 x 12.1 mm, x 42.8..119.4, y 161.4..173.6, cut 0.8 mm deep to the orange ply
+plate: 1 solid(s), volume 63.3 cm3, bbox 197.0 x 187.7
+knob: 12.4 mm, Z 5.20..14.20, hub down to 1.00; shaft in the knob 5.90 mm, of it on the flat 5.00 mm
+battery cradle: Z -18.70..-11.40; the pickup cavity must be at least 19.7 mm deep under the pod
+
+Interference at rest (mm3), parts that must not touch (wires included):
+  intended: Knob x Encoder_PEC12R: 1.19 (crush ribs on the shaft)
+  none
+
+Minimum clearances (mm):
+  Pod: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  Diffuser: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  Switch_EG1201: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  Pickups bodies: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  BatteryCradle: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  Toggle: volume under the plate outside the pickup cavity less 1 mm (mm3, must be 0): 0.000
+  REINS PCB corner outside the traced board cavity, worst (mm; trace good to about 1 mm, the fit test decides): 4.700
+  plastic inside the VL53L1X exclusion cones, both orientations (mm3, must be 0): 0.000
+  plastic inside the cones grown by 0.3 mm for board placement (mm3, must be 0): 0.000
+  VL53L1X sensor to the pod (nothing presses on it): 0.309
+  ToF board parts (Qwiic) to the pod base: 0.300
+  ToF board to the battery cradle: 2.506
+  aperture radius at the plate top: 6.756
+  ring LEDs to the diffuser: 0.404
+  ring LEDs to the pod: 0.800
+  ring board edge to the pod wall (radial): 0.650
+  ring bore to the iris (radial): 0.325
+  ring caps to the pod (groove): 0.315
+  diffuser skirt over the ring top (design 0.05): 0.140
+  LED top to the diffuser underside (air gap for even light): 2.000
+  XIAO to the hood: 0.200
+  XIAO to the plate (window): 0.434
+  OLED glass to the bezel: 0.254
+  OLED module pcb to the plate (0 = rests on the plate): 0.005
+  USB-C plug envelope 12.2 x 6.6 to the hood and plate: 0.000
+  knob to the control frame and hood: 0.500
+  knob to the plate: 0.500
+  knob to the button cap: 1.904
+  knob hub bottom above the encoder collar: 1.000
+  knob bottom above the plinth (push travel 0.4 +0.3): 1.000
+  encoder body to the plate underside: 2.010
+  button cap to the plate and frame (radial guide): 0.200
+  button cap flange under the plate at rest (up stop): 0.300
+  button cap to the B3SN body: 1.100
+  button cap to the encoder: 0.796
+  battery switch to the pod: 8.697
+  battery switch to the pickups: 6.955
+  pickup covers to the plate openings: 0.300
+  board PCB to the spacers (0 = clamped): 0.050
+  spacers to the plate (0 = clamped): 0.000
+  frame to the guard screw countersinks: 0.750
+  USB lane to the guard screw countersinks: 16.364
+  toggle to the pickups: 5.008
+  toggle to the pod: 8.297
+  cell to the cradle (no squeeze; bumps touch): 0.000
+  battery cradle to the pickups: 5.230
+  ring wires to the pod (slot walls, base, tie bar): 0.150
+  ring wires to the diffuser: 1.518
+  ring wires to the plate: 3.869
+  ring wires to the ring caps and LEDs: 1.026
+  ring wires to each other: 0.227
+  ring wires to the ToF board: 4.489
+  ring wires to the battery cradle: 10.602
+  ring wires to the LiPo: 5.902
+  ring wire G to the cradle ceiling edge if it dropped straight down (no tie bar): 2.900
+  Qwiic plug and cable to the pod: 0.144
+  Qwiic plug and cable to the battery cradle: 3.008
+  Qwiic cable to the ring wires: 0.456
+  tie bar passage height (base to bar): 2.800
+  tie bar to the ToF board: 8.066
+
+Cable routes (mm), channel taken at Z -2.0, PH plugs left at Z -17.2; add slack yourself:
+  ring wires, pads to J3: 89
+  ToF Qwiic cable, plug to J1: 137
+  switch wires, EG1201 pins to J5: 76
+  LiPo lead, cradle opening to J2: 91
+  J1 middle pin at (136.3, 30.5); channel mouth (88.0, 75.5), board cavity edge at Y 55.0
+  J2 middle pin at (91.2, 27.5); channel mouth (88.0, 75.5), board cavity edge at Y 55.0
+  J3 middle pin at (84.1, 29.1); channel mouth (88.0, 75.5), board cavity edge at Y 55.0
+  J5 middle pin at (99.9, 26.6); channel mouth (88.0, 75.5), board cavity edge at Y 55.0
+
+Assembly paths (assembled frame, Z up):
+  Knob off the shaft, +Z: free
+  Board with the XIAO plugged in (OLED module unplugged first), down out of the plate, -Z: free
+  Hood off the plinth, +Z (board screws out): free
+  ControlFrame off the plate, +Z (board screws out, knob and hood off): free
+  PodBase down off the Pod, -Z: free
+  ButtonCap out of the plate, -Z (board off): free
+  Pod down, -Z: free
+  Diffuser down out of the plate, -Z (pod off): free
+  USB-C plug out along its axis by the 6.6 mm shell length: free
+  Battery cell out of the cradle sleeve, pod -y: free
+plate on the bed: 196.8 x 187.6 x 4.2 mm
