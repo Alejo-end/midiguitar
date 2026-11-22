@@ -1,5 +1,7 @@
 # MIDI Guitar — Open Source Hardware Specification
 
+> **Older design.** This file describes the first milled guitar board (`finalMidiGuitar/`, firmware v4). The current REINS guitar board is in `reins-guitar/`. See [README.md](README.md).
+
 > A gesture-controlled MIDI interface embedded in a Squier Mustang electric guitar. Two time-of-flight sensors convert hand movements into MIDI messages over USB or Bluetooth LE, giving guitarists real-time control over effects in Max/MSP, Ableton, or any MIDI host.
 
 ---

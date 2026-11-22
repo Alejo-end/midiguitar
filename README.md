@@ -1,397 +1,125 @@
-# MIDI Guitar
+# REINS: gesture MIDI for guitar
 
-A gesture-controlled MIDI rig in two pieces:
+REINS turns hand movement over a guitar into MIDI. A distance sensor in a printed pickguard measures how high your hand floats over the body. The guitar sends that as MIDI over radio to a small box on the floor. The box plays it out over USB MIDI and 5-pin DIN. The box also has its own sensor, an expression pedal input and two footswitch inputs.
 
-- **Transmitter — the guitar.** A Squier Mustang with a time-of-flight distance sensor near the pickups. Wave your hand over the body and it streams MIDI.
-- **Receiver — the dongle ("Heat").** A small custom-PCB box that receives the guitar's MIDI wirelessly, re-emits it as class-compliant USB-MIDI for a host, drives hardware synths over DIN/TRS MIDI, and provides a second gesture zone of its own.
+Website with a 3D model and a live demo: **<https://alejo-end.github.io/reins/>**
 
-Together they let you play effects and instruments in Max/MSP, Ableton, a Eurorack, or any MIDI gear — with no laptop required in the signal path.
+| Guitar: the pickguard (version 2) | Floor: the receiver box (case version 2) |
+| --- | --- |
+| ![REINS pickguard, top view](reins-guitar/pickguard/v2/renders/v2-top.png) | ![REINS receiver box, exploded view](receiver-case/renders/exploded-iso.png) |
 
-## System architecture — transmitter + receiver
-
-```
-        GUITAR  (transmitter)                         RECEIVER DONGLE  ("Heat")
-   ┌────────────────────────────┐                ┌─────────────────────────────────┐
-   │ VL53L1X ToF (hand distance)│                │ VL53L5CX 8×8 ToF (2nd zone)     │
-   │ XIAO ESP32-S3 Sense        │   ESP-NOW      │ XIAO ESP32-S3 Plus              │
-   │ OLED · NeoPixel ring · enc │   2.4 GHz      │ OLED · NeoPixel stick · enc     │
-   │                            │   5-byte pkt   │                                 │
-   │ USB-MIDI · BLE-MIDI        │──── ~2–4 ms ──▶│ USB-MIDI ───────────▶ host      │
-   │ (ESP-NOW TX — planned)     │                │ DIN + TRS MIDI ─────▶ synths    │
-   └────────────────────────────┘                │ MCP4561 digipot ────▶ EXP pedal │
-                                                  └─────────────────────────────────┘
-```
-
-The two halves talk over **ESP-NOW** — a connectionless 2.4 GHz Espressif protocol with no pairing dance and no BLE-GATT timestamp gymnastics. One-way latency is ~2–4 ms (vs. ~7–15 ms with jitter for BLE-MIDI). Both ends pin to **WiFi channel 1** and exchange a fixed **5-byte packet**:
+## How it works
 
 ```
-magic (0xCB) | seq | status | data1 | data2     // __attribute__((packed)), sizeof == 5
+ GUITAR (transmitter)                          FLOOR BOX (receiver)
+ XIAO ESP32-S3 Sense                           XIAO ESP32-S3 Plus
+ VL53L1X ToF sensor, 16 LED ring,   ESP-NOW    VL53L5CX 8x8 ToF sensor, 8 LED stick,
+ OLED, encoder, mute button, LiPo  ────────▶   OLED, encoder, MODE and MUTE buttons
+                                   2 to 4 ms
+ USB MIDI out                                  USB MIDI out, 5-pin DIN MIDI out
+                                               EXP pedal in, FOOT in (MUTE, HOLD)
 ```
 
-`magic` rejects RF noise of the right length; `seq` is a rolling counter so the receiver can detect dropped packets via gaps. There is **no Bluetooth on the receiver** — it was removed wholesale in the v6 plan in favour of ESP-NOW.
-
-| | **Transmitter — the guitar** | **Receiver — the dongle ("Heat")** |
-|---|---|---|
-| Board | XIAO ESP32-S3 Sense | XIAO ESP32-S3 Plus |
-| Sensor | VL53L1X single-point ToF | VL53L5CX 8×8 multizone ToF |
-| Senses | hand distance over the guitar body | hand gesture over a floor/amp-mounted pad |
-| MIDI out | USB-MIDI, BLE-MIDI, (ESP-NOW TX — planned) | USB-MIDI (host), DIN + TRS (synths) |
-| Extra out | NeoPixel ring (16), OLED | MCP4561 expression pot, NeoPixel stick (8), OLED |
-| Firmware | `code/tof_midi_v5/` | `code/tof_midi_v6/` (full), `code/tof_midi_v6_rx/` (minimal) |
-
-> **Current status.** The receiver's ESP-NOW RX path and its local VL53L5CX gesture zone are working — so the dongle is usable standalone today. The guitar's ESP-NOW **transmit** path is the remaining piece: the stock v5 guitar still sends BLE-MIDI, so the wireless guitar→dongle link stays silent until the guitar-side ESP-NOW TX lands (see `code/tof_midi_v5/CLAUDE.md §4 B5`).
-
-## The guitar (transmitter)
-
-Wave your hand over the VL53L1X sensor mounted near the pickups. The firmware converts distance and hand speed into MIDI CC and pitch bend messages, sent over USB or Bluetooth LE (and, on the v6 roadmap, ESP-NOW to the receiver). A rotary encoder navigates the OLED menu; a bypass button mutes output; a DIP switch selects the default transport. The sections below document the guitar in detail.
-
-## MIDI output
-
-| Message    | Default CC | Source        | Use case                                  |
-|------------|-----------|---------------|-------------------------------------------|
-| CC         | CC20      | Hand distance | Continuous modulation (wah, filter, delay) |
-| CC         | CC21      | Hand velocity | Speed-based effects (resonance, attack)    |
-| Pitch Bend | --        | Hand distance | 14-bit smooth pitch shifting               |
-
-MIDI channel, CC numbers, distance range, and response curve are all adjustable at runtime via the Settings page. Changes persist across power cycles (saved to flash).
-
-## Hardware
-
-| Component | Part | Purpose |
-|-----------|------|---------|
-| MCU | Seeed XIAO ESP32-S3 | USB-OTG + BLE 5.0 |
-| Sensor | VL53L1X (or VL53L4CD) | I2C time-of-flight, 10-500mm |
-| Display | SSD1306 128x64 OLED | 4-page Elektron-style UI |
-| Encoder | Rotary w/ push button | Page navigation + parameter control |
-| LED ring | 16x WS2812B NeoPixel | Color-coded distance bar + animations |
-| Bypass btn | Momentary push button | Mute MIDI output |
-| Edit btn | Momentary push button | Toggle edit mode on Settings page |
-| Transport SW | SPDT slide switch | USB / BLE default at boot |
-| Pickup SW (x2) | SPDT slide switches | Neck / Bridge on/off (analog, not GPIO) |
-| Battery | LiPo (optional) | Charges via XIAO built-in circuit |
-
-## Wiring
-
-### GPIO pinout
-
-| Function       | XIAO Pin | GPIO  | Notes |
-|----------------|----------|-------|-------|
-| I2C SDA        | D4       | 5     | Shared: OLED + VL53L1X |
-| I2C SCL        | D5       | 6     | Shared: OLED + VL53L1X |
-| NeoPixel DIN   | D1       | 2     | 16-LED ring, data in |
-| Transport SW   | D2       | 3     | DIP switch, INPUT_PULLUP |
-| Bypass button  | D3       | 4     | Momentary, INPUT_PULLUP |
-| Encoder A      | D8       | 7     | Quadrature channel A |
-| Encoder B      | D9       | 8     | Quadrature channel B |
-| Encoder push   | D10      | 9     | Encoder built-in button |
-| VL53L1X XSHUT  | D6       | 43    | Sensor reset/address set |
-| Edit button    | D7       | 44    | Momentary, INPUT_PULLUP |
-
-### I2C bus (400kHz)
-
-| Device   | Address |
-|----------|---------|
-| SSD1306 OLED | 0x3C |
-| VL53L1X      | 0x30 (remapped from 0x29 via XSHUT) |
-
-### Button wiring
-
-All buttons use the internal pullup resistor (INPUT_PULLUP). No external resistor required:
-
-```
-GPIO pin ──── ┤ ├ ──── GND
-             button
-```
-
-## Firmware versions
-
-The firmwares in `code/` split along the transmitter/receiver line.
-
-**Transmitter — the guitar:**
-
-| Version | Folder | Description |
-|---------|--------|-------------|
-| v4 | `tof_midi_v4/` | Single device: full OLED UI, encoder menu, settings page, NVS persistence, animations |
-| **v5** | **`tof_midi_v5/`** | **Adds WiFi web-config UI, 8 presets, boot self-test, free-heap monitor — USB + BLE MIDI** |
-
-**Receiver — the dongle ("Heat"):**
-
-| Version | Folder | Description |
-|---------|--------|-------------|
-| v6 (rx) | `tof_midi_v6_rx/` | Minimal, works-on-first-flash: ESP-NOW → USB-MIDI + local VL53L5CX 8×8 + OLED link diagnostics |
-| **v6 (full)** | **`tof_midi_v6/`** | **Full Heat dongle: adds DIN/TRS MIDI, MCP4561 expression out, DRONE/RHYTHM/DRUMS routing, NVS presets, WiFi config** |
-
-Each device's folder has its own `README.md` with the deep detail; the sections below summarise the guitar's v4 UI (largely carried into v5) and the receiver dongle.
-
-### v4 features
-
-- 4-page OLED UI (Elektron Digitakt-inspired)
-- Rotary encoder navigation with long-press bypass
-- Runtime-adjustable settings saved to flash (NVS)
-- NeoPixel gradient arc with velocity pulse and mode-change wipe
-- Bypass breathing animation and BLE connection flash
-- Synchronized OLED + NeoPixel startup animation
-- Sensor error recovery (retries, graceful degradation)
-- OLED screensaver after 60s inactivity
-- Hardware watchdog (5s auto-reset on hang)
-- DIP switch live-read (no reboot needed)
-- Toast overlay notifications on setting changes
-
-## User interface
-
-### Controls
-
-| Input | Action |
-|-------|--------|
-| Encoder rotate | Adjust setting on current page |
-| Encoder short-press (<500ms) | Next page |
-| Encoder long-press (>500ms) | Toggle bypass (mute) |
-| Bypass button | Toggle bypass (mute) |
-| Edit button | Enter/exit edit mode on Settings page |
-| Transport DIP switch | Set default transport (read at boot + live) |
-
-### OLED pages
-
-Navigate pages with encoder push. The active page is shown by a tall white block in the page indicator bar at the bottom; inactive pages show thin dashes.
-
-#### Page 1 -- Live
-
-Real-time sensor data. Encoder rotation adjusts LED brightness.
-
-```
-┌────────────────────────────────────────┐
-│▌USB▐ ▌CC▐ Ch1              ▌MUTE▐     │
-│────────────────────────────────────────│
-│DST ▓▓▓▓▓▓▓▓▓▓▓▓ ▓▓▓ ░ ░ ░ ░    102  │
-│────────────────────────────────────────│
-│VEL ▓▓▓ ░ ░ ░ ░ ░ ░ ░ ░ ░ ░ ░    38  │
-│────────────────────────────────────────│
-│CC20  CC21                  245mm       │
-│────────────────────────────────────────│
-│▓▓▓ ▓▓▓ ▓▓▓ ▓▓▓ ▓▓▓ ░ ░ ░ ░ ░ ░ ░   │
-│              █ _ _ _                   │
-└────────────────────────────────────────┘
-```
-
-- **Status bar**: Transport badge, mode badge, channel, BLE indicator, mute/error badge
-- **DST/BND bar**: Segmented distance bar + numeric value
-- **VEL bar**: Segmented velocity bar + numeric value
-- **Info row**: CC numbers (or bend value) + raw distance in mm
-- **Activity meter**: Full-width segmented bar with quarter-mark ticks
-- When muted: bars show diagonal stripes, meter shows dashed outline
-
-#### Page 2 -- Transport
-
-Select MIDI output. Encoder rotation cycles USB / BLE / Both.
-
-```
-┌────────────────────────────────────────┐
-│█████████████████████████████████████████│
-│█       OUTPUT                        █│
-│█████████████████████████████████████████│
-│ ╭────────╮  ╭────────╮  ╭────────╮    │
-│ │  USB   │  │███BLE██│  │  BOTH  │    │
-│ │  icon  │  │██icon██│  │  icon  │    │
-│ │        │  │████████│  │        │    │
-│ ╰────────╯  ╰████████╯  ╰────────╯    │
-│              _ █ _ _                   │
-└────────────────────────────────────────┘
-```
-
-#### Page 3 -- Mode
-
-Select CC or Pitch Bend mode. Encoder rotation toggles.
-
-```
-┌────────────────────────────────────────┐
-│█████████████████████████████████████████│
-│█       MODE                          █│
-│█████████████████████████████████████████│
-│ ╭──────────────────╮ ╭──────────────╮  │
-│ │██ staircase ████ │ │   arrows     │  │
-│ │██ waveform █████ │ │   ↑ ─── ↓   │  │
-│ │█████████CC██████ │ │    BEND      │  │
-│ ╰██████████████████╯ ╰──────────────╯  │
-│              _ _ █ _                   │
-└────────────────────────────────────────┘
-```
-
-#### Page 4 -- Settings
-
-Editable parameter list. Encoder rotation moves cursor. Press edit button to enter edit mode (value blinks with `< >` arrows), rotate to change value, press edit button again to confirm. Settings auto-save to flash 2 seconds after the last change.
-
-```
-┌────────────────────────────────────────┐
-│█████████████████████████████████████████│
-│█   SETTINGS                    EDIT  █│
-│█████████████████████████████████████████│
-│ CC Dist                           20  │
-│ CC Vel                            21  │
-│█Curve████████████████████████<LIN>████│
-│ LED Brt                           40  │
-│ Invert                           OFF  │
-│              _ _ _ █                   │
-└────────────────────────────────────────┘
-```
-
-| Setting | Range | Default | Description |
-|---------|-------|---------|-------------|
-| MIDI Ch | 1--16 | 1 | MIDI channel for all output |
-| CC Dist | 0--127 | 20 | CC number for distance |
-| CC Vel | 0--127 | 21 | CC number for velocity |
-| Dist Min | 5--200 mm | 10 | Sensor near threshold |
-| Dist Max | 100--1000 mm | 500 | Sensor far threshold |
-| Curve | LIN / LOG / EXP | LIN | Response curve shape |
-| LED Brt | 5--255 | 40 | NeoPixel ring brightness |
-| Invert | OFF / ON | OFF | Flip distance mapping (closer = higher value) |
-
-### Toast notifications
-
-Brief centered overlay messages appear for 500ms on any page when settings change:
-
-| Event | Toast text |
-|-------|-----------|
-| Bypass on | `MUTED` |
-| Bypass off | `ACTIVE` |
-| Transport change | `USB` / `BLE` / `BOTH` |
-| Mode change | `CC` / `BEND` |
-| Sensor failure | `NO SENSOR` |
-
-## NeoPixel ring
-
-16-LED WS2812B ring with color-coded animations:
-
-| State | Animation | Color |
-|-------|-----------|-------|
-| USB + CC mode | Gradient arc (bright tip, dim tail) | Green |
-| USB + Pitch Bend | Gradient arc | Purple |
-| BLE + CC mode | Gradient arc | Blue |
-| BLE + Pitch Bend | Gradient arc | Cyan |
-| USB+BLE + CC | Gradient arc | Teal |
-| USB+BLE + PB | Gradient arc | Violet |
-| Bypassed (muted) | Sine-wave breathing | Amber |
-| BLE scanning | Two-LED chase spinner | Blue |
-| BLE connected | Full ring flash (200ms) | Blue |
-| Mode/transport change | Clockwise wipe (150ms) | New mode color |
-| High velocity (>100) | Leading LED flash | White |
-| Sensor error | Alternating blink | Red |
-
-### Startup sequence
-
-The OLED and NeoPixel ring play a coordinated 4-phase boot animation:
-
-1. **Line sweep** -- horizontal line draws across OLED center; single LED spins around ring
-2. **Box expand** -- rounded rectangle grows from center line; ring fills outward with gradient
-3. **Typewriter** -- "M I D I G U I T A R" types in character by character; ring pulses gently
-4. **Fade out** -- black bars close from top and bottom; ring fades to black
-
-## Sensor processing
-
-```
-VL53L1X raw distance (mm)
-    │
-    ▼
-EMA smoothing (alpha = 0.2)
-    │
-    ▼
-Normalize to 0.0--1.0 (distMin → distMax range)
-    │
-    ▼
-Apply curve (linear / log / exp)
-    │
-    ▼
-Optional invert (1.0 - value)
-    │
-    ├──► CC mode:  scale to 0--127, send CC
-    └──► PB mode:  scale to 0--16383, send Pitch Bend
-
-Velocity = |delta EMA| per poll cycle
-    deadzone: < 2mm → 0
-    cap: 30mm → 127
-```
-
-## Reliability
-
-- **Sensor recovery**: If VL53L1X fails to initialize, retries 3 times before falling back to display-only mode (OLED and ring still work, MIDI is disabled). An `ERR` badge appears on the Live page.
-- **Watchdog**: 5-second hardware watchdog timer auto-resets the ESP32 on hang.
-- **Screensaver**: OLED blanks after 60 seconds of inactivity. Wakes on encoder, button, or sensor movement.
-- **Flash persistence**: Settings saved to ESP32 NVS with 2-second write debounce to prevent flash wear from rapid encoder scrolling.
-- **DIP live-read**: Transport DIP switch is polled every 200ms in the main loop -- no reboot needed to change transport.
-
-## The receiver dongle ("Heat")
-
-A small box on a custom-milled single-sided PCB, built around a XIAO ESP32-S3 **Plus**. It does the inverse of the guitar: it **receives** the guitar's MIDI over ESP-NOW and re-emits it as **class-compliant USB-MIDI** to a host — and it carries its **own VL53L5CX 8×8 multizone ToF** as a second gesture zone (a floor- or amp-mounted pad), fused into the same MIDI stream. (The dongle was developed as "Heat", a Tangible Music Lab "Out of Control" submission.)
-
-### Hardware
-
-| Component | Part | Bus / pin |
-|-----------|------|-----------|
-| MCU | XIAO ESP32-S3 Plus | — |
-| Sensor | VL53L5CX 8×8 multizone ToF | I²C 0x29 |
-| Display | SSD1306 128×64 OLED | I²C 0x3C |
-| Expression out | MCP4561 single 10kΩ I²C digital pot (PDIP-8) | I²C 0x2E |
-| MIDI out | 5-pin DIN + 3.5mm TRS Type A (shared 2×220 Ω) | Serial1 TX, GPIO43 |
-| Visual | NeoPixel stick (8 px) via 3.3→5V level shifter | GPIO9 (D10) |
-| Controls | EC11 encoder + mute + mode buttons | GPIO7/8/4, D0/D1 |
-
-I²C bus runs at 400 kHz: `0x29` VL53L5CX, `0x2E` MCP4561, `0x3C` OLED.
-
-### Outputs
-
-- **USB-MIDI** — class-compliant (TinyUSB); the guitar's stream plus the dongle's local gesture zone, merged.
-- **DIN + TRS MIDI** — 31250 baud on GPIO43 (Serial1 TX), driving both the 5-pin DIN jack and the 3.5mm TRS Type A jack through a shared 2×220 Ω network.
-- **Expression** — one MCP4561 digital pot at 0x2E → 1/4″ stereo jack, emulating an expression pedal into other gear's EXP input (Casio Dimension-Shifter style). The wiper tracks a selectable ToF feature: distance / velocity / centroid-X / coverage, with optional invert.
-
-### Modes & controls
-
-The full firmware adds a **DRONE / RHYTHM / DRUMS** note router (continuous CCs stream in all three modes — only note triggering differs), cycled with the mode button. The mode button also selects the sensor source (**BOTH → GUITAR → LOCAL**). Bypass/panic is on the encoder tap and the mute button — there is no footswitch. Triple-tapping the encoder opens a WiFi config AP with live readouts, 8 presets, and on-stage routing thresholds (trigger / release / vel-floor / gate-ms).
-
-### Two firmwares
-
-- **`code/tof_midi_v6_rx/`** — focused, works-on-first-flash: ESP-NOW → USB-MIDI passthrough + local VL53L5CX + OLED link diagnostics. Deliberately omits the Heat extras (digipot, DIN/TRS, mode router, web config) so the core link + sensor + display can be confirmed first.
-- **`code/tof_midi_v6/`** — the full Heat dongle, folding those extras back in. Pin-compatible with `v6_rx` so both firmwares run on the same board.
-
-The full standalone Heat PlatformIO project (with its own `README.md`, `ARCHITECTURE.md`, and KiCad) lives under `code/tof_midi_v6_rx/heat/`.
-
-## Building
-
-### Guitar — Arduino IDE
-
-1. Board: **XIAO_ESP32S3**
-2. USB Mode: **USB-OTG (TinyUSB)**
-3. Install libraries:
-   - SparkFun VL53L1X
-   - Adafruit NeoPixel
-   - Adafruit SSD1306
-   - Adafruit GFX
-4. Upload
-
-### Guitar — Arduino CLI
+1. The guitar reads the hand distance every 20 ms. It sends two CCs on MIDI channel 1: CC 20 for the distance and CC 21 for the hand speed. By default, 10 mm gives 0 and 500 mm gives 127.
+2. Every message goes out over USB MIDI and over ESP-NOW radio at the same time. ESP-NOW is connectionless WiFi from Espressif. The guitar broadcasts on WiFi channel 1. Each packet is 5 bytes: `0xCB`, a counter, then the 3 MIDI bytes. The box uses the counter to count lost packets.
+3. The box forwards the guitar's MIDI to USB (class compliant) and to the DIN socket. Its own 8 x 8 zone sensor sends CC 22 and CC 23 on channel 2. An expression pedal on EXP sends CC 11 on channel 2.
+4. FOOT takes two footswitches on one TRS cable. The tip is MUTE: it toggles mute and sends All Notes Off. The ring is HOLD: while it is down, the box's own CCs and the pedal stay frozen.
+5. The MODE button chooses the source: both sensors, the guitar only or the box only. A long press on MODE pairs the box with the guitar it hears.
+
+## What is in this repository
+
+| Folder | Content |
+| --- | --- |
+| [`code/tof_midi_v5/`](code/tof_midi_v5/) | Guitar firmware (current) |
+| [`code/tof_midi_v6_rx/`](code/tof_midi_v6_rx/) | Receiver firmware (current): radio to USB and DIN, local sensor, pedal, footswitches |
+| [`code/tof_midi_v6/`](code/tof_midi_v6/) | Larger receiver firmware with a note router, presets and a WiFi page for its settings. Not tested on a board |
+| `code/tof_midi_v4/`, `code/debug*/` | Older guitar firmware and test sketches |
+| [`reins-guitar/`](reins-guitar/) | Guitar board for JLCPCB (KiCad), with Gerbers, BOM and CPL |
+| [`reins-guitar/pickguard/`](reins-guitar/pickguard/) | Printed pickguard: FreeCAD scripts, STL files and sliced print files |
+| [`reins-ring/`](reins-ring/) | 16 LED ring board for JLCPCB, made by a script |
+| [`receiver-case/`](receiver-case/) | STL files of the receiver box case |
+| [`order/`](order/) | JLCPCB order options, cable guide and DigiKey parts list |
+| `finalMidiGuitar/`, `HARDWARE.md` | The first milled guitar board and its specification (older) |
+
+The receiver boards (main board and jack board) and the receiver case model are in a separate repository, `heat`, which is not public yet.
+
+## Build it
+
+### Firmware
+
+Both sides use the Arduino ESP32 core 3.x. Board **XIAO_ESP32S3**, USB mode **USB-OTG (TinyUSB)**.
+
+| Side | Sketch | Libraries |
+| --- | --- | --- |
+| Guitar | `code/tof_midi_v5/` | SparkFun VL53L1X, Adafruit NeoPixel, Adafruit SSD1306, Adafruit GFX |
+| Receiver | `code/tof_midi_v6_rx/` | SparkFun VL53L5CX, Adafruit NeoPixel, Adafruit SSD1306, Adafruit GFX |
 
 ```bash
-# v5 (latest guitar firmware) — swap in tof_midi_v4/ for the older single-device build
 arduino-cli compile -b esp32:esp32:XIAO_ESP32S3 \
   --build-property "build.extra_flags=-DARDUINO_USB_MODE=0 -DARDUINO_USB_CDC_ON_BOOT=0" \
   code/tof_midi_v5/
-
-arduino-cli upload -b esp32:esp32:XIAO_ESP32S3 -p /dev/cu.usbmodem* \
-  code/tof_midi_v5/
+arduino-cli upload -b esp32:esp32:XIAO_ESP32S3 -p /dev/cu.usbmodem* code/tof_midi_v5/
 ```
 
-### Receiver dongle
+For the receiver, use `code/tof_midi_v6_rx/` in the same commands. The guitar pages, gestures and settings are in [`code/tof_midi_v5/README.md`](code/tof_midi_v5/README.md).
 
-The `.ino` sketches (`tof_midi_v6_rx/`, `tof_midi_v6/`) build the same way under Arduino — board **XIAO_ESP32S3**, USB-OTG (TinyUSB), `ARDUINO_USB_MODE=0`. Libraries: SparkFun VL53L5CX, Adafruit NeoPixel, Adafruit SSD1306, Adafruit GFX (the MCP4561 digipot is driven over raw `Wire`; ESP-NOW + USB-MIDI ship with the ESP32 core).
+### Boards
 
-The full standalone Heat project under `code/tof_midi_v6_rx/heat/` uses PlatformIO instead:
+| Board | Size | Details |
+| --- | --- | --- |
+| Guitar board | 68.2 x 30.5 mm, 2 layers | [`reins-guitar/README.md`](reins-guitar/README.md) |
+| LED ring | 44.4 mm across, 0.8 mm thick | [`reins-ring/README.md`](reins-ring/README.md) |
 
-```bash
-pio run -d code/tof_midi_v6_rx/heat/heat                 # build
-pio run -d code/tof_midi_v6_rx/heat/heat -t upload       # flash
-```
+Each folder has an `export_jlc.py` script. It writes the Gerber zip, the BOM and the CPL for JLCPCB assembly.
 
-## PCB
+### Prints
 
-Two KiCad projects:
+| Part | Details |
+| --- | --- |
+| Pickguard, version 2 | [`reins-guitar/pickguard/README.md`](reins-guitar/pickguard/README.md): parts, print settings, assembly, wiring |
+| Receiver case, version 2 | [`receiver-case/README.md`](receiver-case/README.md) |
 
-- **Guitar:** `finalMidiGuitar/finalMidiGuitar.kicad_{sch,pcb,pro}`. See `HARDWARE.md` for the full hardware specification.
-- **Receiver dongle ("Heat"):** `code/tof_midi_v6_rx/heat/kicad/heat.kicad_{sch,pcb,pro}`, with `BOM.md` (authoritative parts list) and `PCB_WIRING.md` (pin-by-pin wiring) alongside.
+All parts print in PLA with no supports. The pickguard plate needs a 250 x 220 mm bed (Prusa CORE One). The plate and the receiver lid each have two filament changes for an orange line.
+
+## Parts and ordering
+
+See [`order/`](order/):
+
+- [`order/README.md`](order/README.md): JLCPCB options, files to upload and placement checks.
+- [`order/CABLES.md`](order/CABLES.md): the four cables under the pickguard.
+- [`order/digikey-cart.csv`](order/digikey-cart.csv): small parts from DigiKey.
+
+## Receiver pin map
+
+The JLCPCB receiver main board and the older milled board use the same pins. The jack board connects to the main board through a 7-pin JST PH cable.
+
+| Function | Part | XIAO pin |
+| --- | --- | --- |
+| Sensor | VL53L5CX 8 x 8 ToF, I2C 0x29 | D4 SDA, D5 SCL |
+| Display | SSD1306 128 x 64 OLED, I2C 0x3C | D4 SDA, D5 SCL |
+| MIDI out | 5-pin DIN (Cliff FM6725), 100 ohm to source and sink | D6 |
+| Expression in | 6.35 mm stereo jack: tip wiper, ring 3V3, sleeve GND | D2 |
+| MUTE | Button S4 and the FOOT jack tip | D1 |
+| HOLD | FOOT jack ring | D7 (not on the milled board) |
+| MODE | Button S3 | D0 |
+| Encoder | PEC12R with push | D8, D9, push D3 |
+| LEDs | 8 NeoPixels through a 3.3 to 5 V level shifter | D10 |
+
+A mono footswitch cable shorts the ring, so the box reads HOLD all the time. With mono cables only, set `FOOT2_ENABLE` to 0 in the firmware.
+
+## Status
+
+Working, from the notes in this repository:
+
+- Guitar firmware v5 sends MIDI over USB and ESP-NOW.
+- Receiver firmware `tof_midi_v6_rx` receives the guitar, runs its own sensor and sends USB MIDI.
+- Receiver boards from JLCPCB are assembled with their jacks and DIN socket.
+
+Not tested yet:
+
+- The JLCPCB guitar board and the LED ring. The order files are ready. Nobody tested either board with power.
+- Pickguard version 2 and the receiver case version 2 are designed and sliced. Before the plate print, measure the XIAO socket height (`XIAO_STACK`) and print the fit test.
+- The cable lengths come from the 3D model. The depth of the body channel is not measured.
+- `tof_midi_v6` builds but has not run on a board.
+
+A pickguard redesign (version 3) is in progress.

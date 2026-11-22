@@ -1,188 +1,118 @@
-# MIDI Guitar — v5
+# REINS guitar firmware (v5)
 
-A Squier Mustang turned into a gesture-controlled MIDI instrument.
-Wave your hand over the body and a distance sensor turns the motion
-into MIDI. Plug it in over USB or pair it as a Bluetooth MIDI device
-and play any soft synth.
+This is the firmware for the guitar side of REINS. A distance sensor under the pickguard measures how far your hand is from the body. The firmware turns that into MIDI. It sends every message over USB MIDI and over ESP-NOW radio to the REINS receiver box.
 
-## What's in the box
+## Hardware
 
-- **XIAO ESP32-S3 Sense** — the brain
-- **VL53L1X ToF sensor** — reads hand distance (10–500 mm)
-- **NeoPixel ring (16 LEDs)** — visual feedback
-- **OLED 128×64** — small status screen
-- **Rotary encoder + push** — only control surface; every gesture
-  (tap / hold / triple-tap) is on the encoder push
-- **Tactile button (SW1)** — populated on the PCB but **unused** in
-  firmware on this PCB rev (GPIO 3 reads stuck LOW; see source)
-- **Custom milled PCB** — wires it all to the XIAO
-
-All on the body of the guitar. USB-C for power + MIDI; battery is not
-required.
+- **XIAO ESP32-S3 Sense**: the microcontroller.
+- **VL53L1X ToF sensor**: reads the hand distance, 10 to 500 mm by default.
+- **LED ring, 16 WS2812B**: shows the value.
+- **OLED, 128 x 64**: status screen.
+- **Rotary encoder with push**: settings and pages.
+- **Button SW1 on D1**: mute on and off, on every page.
+- **Battery on D0**: the OLED shows `LOW BAT` under 3.45 V.
+- **Board**: the REINS guitar board in `../../reins-guitar/`. On the older milled board, set `BTN_PIN` and `BAT_PIN` to -1.
 
 ## What it does
 
-1. The ToF sensor measures how far your hand is from the body, ~50
-   times per second.
-2. That distance gets mapped to MIDI:
-   - **CC mode** → MIDI Control Change (default CC20 distance, CC21 velocity)
-   - **PB mode** → 14-bit Pitch Bend
-3. The values are sent over **USB-MIDI**, **Bluetooth MIDI**, or both.
-4. The OLED shows live values, the LED ring mirrors them, and the
-   encoder/button let you tweak settings on the fly.
+1. The sensor measures the hand distance every 20 ms.
+2. The distance becomes MIDI. **CC mode** sends CC 20 (distance) and CC 21 (velocity). **BEND mode** sends 14-bit pitch bend.
+3. Every message goes to USB MIDI and to ESP-NOW (broadcast, WiFi channel 1) at the same time. There is no Bluetooth MIDI.
+4. The OLED shows the live values and the LED ring follows them.
 
-## How to use it
+## Pages
 
-### Powering on
-Plug USB-C in. After a short intro animation a **boot self-test card**
-flashes briefly (OLED / I²C device count / SENSOR pass-fail), then it
-lands on the **LIVE** page, ready to play.
+Hold the encoder push for 600 ms or more to go to the next page.
 
-### The five pages
-**Long-press the encoder (≥ 600 ms)** to advance to the next page:
+| Page | What it shows or does |
+| --- | --- |
+| **LIVE** | Distance bar, velocity bar, raw mm, mode |
+| **MODE** | CC or BEND |
+| **SETTINGS** | Eight values: MIDI channel, CC numbers, distance min and max, curve, LED brightness, invert. The header also shows the free heap in KB (`Hxxk`) |
+| **PRESETS** | 8 saved snapshots: load or save |
 
-| Page         | What it shows / does                          |
-|--------------|-----------------------------------------------|
-| **LIVE**     | Distance bar, velocity bar, raw mm, mode info |
-| **OUTPUT**   | Pick USB, BLE, or both                        |
-| **MODE**     | Pick CC or BEND                               |
-| **SETTINGS** | Eight values: MIDI channel, CC numbers, distance min/max, curve, LED brightness, invert. The header also shows live free-heap in KB (`Hxxk`) — useful for catching leaks. |
-| **PRESETS**  | 8 saved snapshots — load on the fly, save the current setup |
+Turn the encoder to change values. On SETTINGS, a short tap on the encoder turns edit mode on or off for the selected row.
 
-Turn the encoder to change values. On SETTINGS, a short **tap** on the
-encoder toggles edit mode for the highlighted row.
+## Encoder push gestures
 
-### Encoder-push gestures
-Every gesture is on the encoder push (the tactile SW1 is unused on this
-PCB rev).
+| Gesture | Effect |
+| --- | --- |
+| Short tap (under 400 ms) on LIVE | mute or unmute |
+| Short tap on MODE | next option |
+| Short tap on SETTINGS | edit on or off for the selected row |
+| Short tap on PRESETS | load the selected slot |
+| Hold (600 ms or more) | next page |
+| Hold on PRESETS (1.5 s or more) | save the current settings to the selected slot |
+| Triple tap (3 short taps within 600 ms) | WiFi config mode on or off |
+| Hold during boot (5 s or more) | factory reset: clears the saved settings and restarts |
 
-| Gesture                         | Effect                                                |
-|---------------------------------|-------------------------------------------------------|
-| **Short tap** (< 400 ms) on LIVE        | mute / unmute (bypass)                        |
-| **Short tap** on OUTPUT / MODE          | cycle to the next option                      |
-| **Short tap** on SETTINGS               | toggle edit on the highlighted row            |
-| **Short tap** on PRESETS                | load the highlighted slot                     |
-| **Long-press** (≥ 600 ms)               | advance to the next page                      |
-| **Long-hold** on PRESETS (≥ 1.5 s)      | save current settings to the highlighted slot |
-| **Triple-tap** (3 short within 600 ms)  | enter / exit WiFi config mode                 |
-| **Hold during boot** (≥ 5 s)            | **factory reset** — clears NVS and reboots    |
+## Web config page
 
-## The web UI
+Triple tap the encoder. The guitar starts a WiFi network called **MidiGuitar-Config** (password `12345678`). Connect a phone and open <http://192.168.4.1> or <http://midiguitar.local>. The second address needs mDNS (Bonjour): macOS and iOS have it, Android needs an app.
 
-Triple-tap the encoder push → the device starts a WiFi network called
-**MidiGuitar-Config** (password `12345678`). Connect with your phone
-and open either:
-
-- <http://192.168.4.1> — always works
-- <http://midiguitar.local> — works wherever mDNS / Bonjour is
-  honoured (macOS, iOS, recent Windows; Android needs a Bonjour app)
-
-You'll see a dark, mobile-friendly page with every setting on it,
-plus a live monitor and 8 preset slots with `LOAD` / `SAVE` buttons.
-Tap a control, change it, that's it — the device saves automatically.
-Triple-tap the encoder again to exit and turn WiFi off.
-
-The page works without internet because the ESP32 is the access point.
-Everything (HTML, CSS, JS) is served from the device itself.
+The page shows every setting, a live monitor and the 8 preset slots with `LOAD` and `SAVE`. A change saves itself. Triple tap again to leave config mode and turn WiFi off. The page needs no internet. The ESP32 serves it.
 
 ## Presets
 
-Eight slots store snapshots of every persisted setting (MIDI channel,
-CC numbers, distance bounds, curve, brightness, invert). Use them to
-switch between sounds/songs without re-tweaking.
+Eight slots store every saved setting (MIDI channel, CC numbers, distance limits, curve, brightness, invert).
 
-**On the device** (PRESETS page):
-- Encoder rotation selects the slot.
-- Short tap on the encoder loads.
-- Hold the encoder ≥ 1.5 s to save current settings to the highlighted slot.
-- Filled slots have a solid border; empty slots have a dotted border.
+On the guitar (PRESETS page): turn the encoder to select a slot. A short tap loads it. Hold for 1.5 s to save to it. Filled slots have a solid border, empty slots a dotted border.
 
-**On the phone** (web UI):
-- Tap a slot to select it.
-- Tap `LOAD` to apply, or `SAVE` to overwrite the slot with the
-  current settings.
-- Filled slots are bright; empty slots are dimmed.
+On the phone: tap a slot, then `LOAD` or `SAVE`. Filled slots are bright, empty slots dim.
 
-## Settings reference
+## Settings
 
-| Setting     | Range / choices    | What it does                   |
-|-------------|-------------------|--------------------------------|
-| MIDI Ch     | 1–16              | Output channel                 |
-| CC Dist     | 0–127             | Control Change number for distance |
-| CC Vel      | 0–127             | Control Change number for velocity |
-| Dist Min    | 5–500 mm          | Distance that maps to value 0  |
-| Dist Max    | 50–2000 mm        | Distance that maps to value max |
-| Curve       | Linear / Log / Exp | Response shape                 |
-| LED Brt     | 5–255             | NeoPixel ring brightness       |
-| Invert      | ON / OFF          | Reverse the mapping (close = high) |
+| Setting | Range | What it does |
+| --- | --- | --- |
+| MIDI Ch | 1 to 16 | Output channel |
+| CC Dist | 0 to 127 | CC number for the distance |
+| CC Vel | 0 to 127 | CC number for the velocity |
+| Dist Min | 5 to 500 mm | Distance for value 0 |
+| Dist Max | 50 to 2000 mm | Distance for the top value |
+| Curve | Linear, Log, Exp | Response shape |
+| LED Brt | 5 to 255 | LED ring brightness |
+| Invert | on, off | Close gives a high value |
 
-Settings persist across reboots (saved to flash 2 seconds after the
-last change).
+The firmware saves the settings to flash 2 seconds after the last change.
 
 ## Factory reset
 
-Hold the encoder push down while plugging USB-C in (or pressing reset).
-After ~5 seconds the firmware clears its NVS namespace and reboots —
-every setting and preset slot returns to defaults. There's no on-screen
-prompt because the OLED isn't initialised yet at that point in boot;
-the reboot itself is the confirmation.
+Hold the encoder push while you plug in USB-C (or press reset). After about 5 seconds the firmware clears its saved settings and restarts. The OLED is not on yet at that point, so the restart is the only sign.
 
-## Building & flashing
+## Build and flash
 
-### Requirements
-- Arduino IDE (or `arduino-cli`)
+Requirements:
+
+- Arduino IDE or `arduino-cli`
 - ESP32 board package (Espressif Arduino-ESP32 v3.x)
-- Board: **XIAO_ESP32S3**, USB mode: **USB-OTG (TinyUSB)**
+- Board **XIAO_ESP32S3**, USB mode **USB-OTG (TinyUSB)**
+- Libraries: SparkFun VL53L1X, Adafruit NeoPixel, Adafruit GFX, Adafruit SSD1306
 
-### Libraries
-- SparkFun VL53L1X
-- Adafruit NeoPixel
-- Adafruit GFX
-- Adafruit SSD1306
-
-### Compile
 ```bash
 arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 tof_midi_v5
 ```
-Then flash via Arduino IDE or `arduino-cli upload`.
 
-## Files in this folder
+Then flash with the Arduino IDE or `arduino-cli upload`.
 
-```
-tof_midi_v5.ino           Main sketch — sensor, MIDI, UI, web, presets
-web_ui.html               Canonical config page — open in a browser to preview
-web_ui_html.h             Generated from web_ui.html; do not edit by hand
-tools/build_web_ui.sh     Regenerates web_ui_html.h from web_ui.html
-README.md                 This file
-CLAUDE.md                 Engineering rules + roadmap
-WEB_UI_PLAN.md            Design doc for the web UI
-```
+## Files
 
-After editing `web_ui.html`, run `tools/build_web_ui.sh` to regenerate
-the header before flashing.
+| File | Content |
+| --- | --- |
+| `tof_midi_v5.ino` | The sketch: sensor, MIDI, UI, web page, presets |
+| `web_ui.html` | The config page. Open it in a browser to preview |
+| `web_ui_html.h` | Made from `web_ui.html`. Do not edit it by hand |
+| `tools/build_web_ui.sh` | Makes `web_ui_html.h` from `web_ui.html` |
+| `CLAUDE.md` | Engineering rules and roadmap |
+| `WEB_UI_PLAN.md` | Design notes for the config page |
 
-## Tips & caveats
+After you edit `web_ui.html`, run `tools/build_web_ui.sh` before you flash.
 
-- **WiFi config mode disables Bluetooth-grade timing.** WiFi and BLE
-  share the same radio. Don't keep config mode open while playing
-  over BLE — it'll glitch. Triple-tap to exit when you're done.
-- **Boot self-test** shows OLED / I²C / SENSOR status for ~1 s after
-  the intro. If `SENSOR` reads `FAIL`, check the ribbon cable; the
-  VL53L1X retries 3 times at boot.
-- **USB MIDI shows up as "MidiGuitar"** on the host.
-- **Bluetooth pairing**: in iOS/macOS use the Audio MIDI Setup app's
-  MIDI Studio → Bluetooth Configuration. Android needs a BLE-MIDI
-  capable app.
-- **Heap monitor**: the SETTINGS page header shows `Hxxk` (free heap
-  in KB) when not editing. Watch it to catch leaks while developing.
-- All persisted settings (channel, CCs, distance bounds, curve,
-  brightness, invert, transport, mode) come back on reboot. Presets
-  also include mode.
+## Tips
+
+- **Boot self-test.** After the intro, the OLED shows the OLED, I2C and SENSOR status for about 1 s. If `SENSOR` reads `FAIL`, check the sensor cable. The firmware tries the VL53L1X 3 times at boot.
+- **Heap monitor.** When you do not edit, the SETTINGS header shows the free heap (`Hxxk`). Watch it to find leaks.
 
 ## Known limits
 
-- Single sensor (a second VL53L1X is on the roadmap).
-- Web config mode requires triple-tap; there's no physical "config"
-  switch.
-- SW1 / GPIO 3 is unusable on this PCB rev — every gesture is on the
-  encoder push.
+- One sensor only.
+- Config mode needs the triple tap. There is no config switch.
