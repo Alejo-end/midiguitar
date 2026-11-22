@@ -21,7 +21,8 @@
 // until the guitar-side ESP-NOW TX is written (CLAUDE.md §4 B5, PR-1). The
 // on-board VL53L5CX works independently, so the dongle is testable on its own.
 //
-// Board: XIAO ESP32-S3 (Heat dongle PCB), USB: USB-OTG (TinyUSB)
+// Board: XIAO ESP32-S3 on the REINS receiver (heat/kicad/reins.kicad_sch, JLCPCB) or the
+// milled heat/kicad/heat.kicad_sch (same pins, D7 open). USB: USB-OTG (TinyUSB)
 // Libs (Arduino IDE Library Manager):
 //   SparkFun VL53L5CX Arduino Library
 //   Adafruit NeoPixel
@@ -38,14 +39,14 @@
 // ─── Scope of THIS file ──────────────────────────────────────────────────────
 // Focused, works-on-first-flash receiver. Mirrors every MIDI message to the 5-pin
 // DIN MIDI OUT socket (Serial1 on D6). Deliberately omits the untested Heat extras
-// (MCP4561 digipot/expression, DRONE/RHYTHM/DRUMS mode router, WiFi web-config,
-// NVS presets) — those live in ../tof_midi_v6/ and can be folded back in once the
-// core link + sensor + OLED are confirmed good.
+// (DRONE/RHYTHM/DRUMS mode router, WiFi web-config, NVS presets). Those live in
+// ../tof_midi_v6/, which uses the same pins, MUTE, HOLD and expression input.
 
 #define DEBUG 1
 
-// ─── Pin map ─ XIAO ESP32-S3, Heat dongle socket. Matches tof_midi_v6.ino
-// except BTN_MUTE / BTN_MODE (swapped, see below).
+// ─── Pin map: XIAO ESP32-S3 socket M1 on the REINS receiver. Matches tof_midi_v6.ino.
+// The jack board connects through J9 (7-pin JST PH): 1 3V3, 2 MIDI source,
+// 3 MIDI sink, 4 GND, 5 EXP, 6 MUTE (FOOT tip), 7 HOLD (FOOT ring).
 // XIAO Dn → GPIO: D0=1 D1=2 D2=3 D3=4 D4=5 D5=6 D6=43 D7=44 D8=7 D9=8 D10=9
 #define I2C_SDA       5     // D4 → VL53L5CX SDA + OLED SDA
 #define I2C_SCL       6     // D5 → VL53L5CX SCL + OLED SCL
@@ -60,14 +61,11 @@
 #define ENC_B         8     // D9 → encoder channel B
 #define ENC_PUSH      4     // D3 → encoder pushbutton to GND
 
-// Heat receiver board rev 2026-10: MUTE moved to D1 so the FOOTSWITCH can reach it (a mono
-// 6.35 mm jack in the case wall, wired through the jack board to J6, in parallel with S4);
-// MODE moved to D0. Button S4 is now
-// MUTE and S3 is MODE (silkscreen matches). tof_midi_v6.ino still uses D0/D1 the
-// old way round.
+// MUTE is S4 (Omron B3F-4055) in parallel with the TIP of the FOOT jack (Cliff CL1232A on
+// the jack board, J9 pin 6). MODE is S3. The silkscreen matches.
 #define BTN_MUTE      2     // D1 → MUTE/panic button S4 + footswitch jack tip to GND
                             // (reads HIGH via pull-up if unpopulated — harmless)
-// FOOT2 / HOLD: D7 = GPIO44, the RING of the footswitch jack on the REINS boards (the tip goes
+// FOOT2 / HOLD: D7 = GPIO44, the RING of the footswitch jack, J9 pin 7 (the tip goes
 // to MUTE on D1). With a two-switch stomp box on a TRS cable, the second switch freezes the local
 // sensor and expression CCs while it is down (HOLD). A MONO footswitch cable shorts the ring to
 // ground, which reads as HOLD all the time: set FOOT2_ENABLE to 0 if you only use mono cables.
@@ -80,17 +78,18 @@
 #define BTN_MODE      1     // D0 → MODE button S3 to GND: cycles the sensor source
                             // (BOTH → GUITAR → LOCAL). Also optional; pull-up safe.
 
-// Hardware MIDI OUT on a 5-pin DIN socket (Cliff FM6725) on the jack board, wired to pads J5
-// (DIN 5 = sink via 100 ohm from D6, DIN 4 = source via 100 ohm from 3V3, DIN 2 = GND).
+// Hardware MIDI OUT on a 5-pin DIN socket (Cliff FM6725) on the jack board, through J9 pins 2-4
+// (DIN 5 = sink via R20 100 ohm from D6, DIN 4 = source via R21 100 ohm from 3V3, DIN 2 = GND).
 // Same messages as USB MIDI. At reset the
 // ESP32-S3 ROM prints a short boot log on this pin at 115200 baud; MIDI gear
 // ignores it (wrong speed). Set to 0 to compile it out.
 #define HW_MIDI_OUT   1
 #define MIDI_TX_PIN   43    // D6
 
-// Expression pedal on D2: a stereo 6.35 mm jack in the case wall (tip = wiper, ring = supply,
-// sleeve = GND). The jack board feeds the ring from 3V3 through 200 ohm (a mono plug only
-// shorts that) and filters the wiper with 10k + 100 nF. The internal pull-down holds D2 at
+// Expression pedal on D2 (J9 pin 5): the EXP stereo 6.35 mm jack, a Cliff CL1232A on the jack
+// board in the back wall (tip = wiper, ring = supply, sleeve = GND). The jack board feeds the
+// ring from 3V3 through 200 ohm (a mono plug only shorts that) and filters the wiper with
+// 10k + 100 nF. The internal pull-down holds D2 at
 // 0 V with no pedal. The range is learned: CC 11 stays silent until the pedal has moved over
 // EXP_MIN_SPAN ADC counts since power-up, so an empty jack never sends anything.
 #define EXP_PIN       3     // D2 = GPIO3, ADC1 channel 2 (ADC1 works while ESP-NOW runs)

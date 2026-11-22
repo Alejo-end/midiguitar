@@ -1,25 +1,27 @@
-// tof_midi_v6.ino — hands-free ToF MIDI + expression controller (Heat)
+// tof_midi_v6.ino: hands-free ToF MIDI controller (Heat) for the REINS receiver board
 //
-// Receiver-dongle PCB target (../tof_midi_v6_rx/heat/kicad/). Hand gesture
-// over a VL53L5CX 8×8 ToF sensor drives MIDI (USB + DIN/TRS) and a single
-// expression output (MCP4561 digital pot — emulates an expression pedal to
-// control other gear, Dimension-Shifter style). ESP-NOW RX bridges MIDI
-// from the v5 guitar TX. NeoPixel stick gives gesture visual feedback.
+// Receiver board target: heat/kicad/reins.kicad_sch (JLCPCB) and the milled
+// heat/kicad/heat.kicad_sch, with the jack board heat/kicad/reins-jack.kicad_sch.
+// Hand gesture over a VL53L5CX 8×8 ToF sensor drives MIDI (USB + 5-pin DIN).
+// An expression pedal on the jack board adds one more CC. ESP-NOW RX bridges
+// MIDI from the v5 guitar TX. NeoPixel stick gives gesture visual feedback.
 //
 //   ESP-NOW RX (from v5 guitar TX)  ─┐
 //   Local VL53L5CX 8×8 ToF grid     ─┼─▶  mode router (DRONE/RHYTHM/DRUMS)
-//                                                │
-//                                  ┌─────────────┼──────────────┬───────────┐
-//                                  ▼             ▼              ▼           ▼
-//                              USB MIDI     DIN+TRS MIDI    MCP4561      SSD1306 OLED
-//                              (TinyUSB)    (Serial1 TX)    digipot      (live+pages)
-//                                                          → 1× EXP out  + NeoPixel viz
+//   Expression pedal (D2, ADC)      ─┘            │
+//                                  ┌──────────────┼──────────────┐
+//                                  ▼              ▼              ▼
+//                              USB MIDI      DIN MIDI OUT    SSD1306 OLED
+//                              (TinyUSB)     (Serial1 TX)    (live+pages)
+//                                                            + NeoPixel viz
+//
+// Same pin map and the same MUTE / HOLD / expression handling as
+// ../tof_midi_v6_rx/tof_midi_v6_rx.ino, so both sketches run on the same board.
 //
 // Cross-references:
 //   ../tof_midi_v5/tof_midi_v5.ino       — page system, settings, web UI, presets
-//   ../tof_midi_v6_rx/tof_midi_v6_rx.ino — ESP-NOW RX, bypass mux
-//   ../tof_midi_v6_rx/heat/kicad/BOM.md  — authoritative parts list
-//   ../tof_midi_v6_rx/heat/kicad/PCB_WIRING.md — pin-by-pin wiring
+//   ../tof_midi_v6_rx/tof_midi_v6_rx.ino: ESP-NOW RX, bypass mux, footswitches
+//   heat/kicad/REVIEW.md, heat/kicad/JLC.md: board notes and parts
 //
 // Board: XIAO_ESP32S3 (Plus module in a generic 14-pin socket — Plus
 //        underside pads D11..D19 are NOT exposed on this PCB).
@@ -29,7 +31,6 @@
 //   SparkFun VL53L5CX Arduino Library
 //   Adafruit NeoPixel
 //   Adafruit SSD1306, Adafruit GFX
-//   (MCP4561 digipot driven over raw Wire — no library needed)
 //   (ESP-NOW + USBMIDI ship with arduino-esp32 core)
 //   (Preferences + WebServer + WiFi ship with arduino-esp32 core)
 //
@@ -38,25 +39,24 @@
 //   [M1] ESP-NOW RX path verified (lifted from v6_rx). — DONE
 //   [M2] VL53L5CX bring-up at 0x29, 8×8 @ 15 Hz, sharpener 20%, CLOSEST. — DONE (untested)
 //   [M3] Feature extraction: distMm, liveVel, centroidX/Y, coverage. — DONE (untested)
-//   [M4] MCP4561 digipot expression OUTPUT (1 wiper from a ToF feature). — DONE (untested)
+//   [M4] Expression pedal INPUT on D2 → CC. The MCP4561 output is gone. DONE (untested)
 //   [M5] Mode router (DRONE / RHYTHM / DRUMS) → MIDI only (no CV). — DONE (untested)
-//   [M6] DIN + TRS MIDI via Serial1 TX, mirrors USB. — DONE (untested)
+//   [M6] DIN MIDI via Serial1 TX, mirrors USB. DONE (untested)
 //   [M7] OLED pages: LIVE / MODE / SETTINGS / PRESETS / INFO. — DONE (untested)
 //   [M8] NVS settings + 8-slot presets + WiFi config web UI. — DONE (untested)
 //   [M9] NeoPixel gesture feedback (distance bar + velocity colour). — DONE (untested)
+//   [M10] MUTE + HOLD footswitches on the FOOT jack (D1 tip, D7 ring). DONE (untested)
 
 #define DEBUG 1
 
-// ─── Pin map — generic XIAO ESP32-S3 socket (only 14 top-side pads) ─────
+// ─── Pin map: REINS receiver, generic XIAO ESP32-S3 socket ──────────────
 // XIAO Dn → GPIO:
 //   D0=1 D1=2 D2=3 D3=4 D4=5 D5=6 D6=43 D7=44 D8=7 D9=8 D10=9
 //
-// Pads 1/2/8 (D0/D1/D7) are the free pads on the current board; buttons
-// take D0/D1, D7 is spare. D2/GPIO3 is a strapping pin — left unused.
-// The expression output is a digital pot on the I²C bus (no GPIO), and
-// the bypass/mute is on the encoder tap + BTN_MUTE (no footswitch).
+// The jack board connects through J9 (7-pin JST PH): 1 3V3, 2 MIDI source,
+// 3 MIDI sink, 4 GND, 5 EXP, 6 MUTE (FOOT tip), 7 HOLD (FOOT ring).
 
-#define I2C_SDA      5    // D4 → ToF + OLED + MCP4561 digipot bus
+#define I2C_SDA      5    // D4 → ToF + OLED bus
 #define I2C_SCL      6    // D5
 #define I2C_FREQ     400000
 
@@ -64,22 +64,47 @@
 #define ENC_B        8    // D9 → encoder channel B
 #define ENC_PUSH     4    // D3 → encoder pushbutton to GND
 
-#define MIDI_TX_PIN  43   // D6 → Serial1 TX → DIN + TRS jacks, 220 Ω series
-#define BTN_MUTE     1    // D0 → mute button (all-notes-off panic)   [free pad]
-#define BTN_MODE     2    // D1 → mode-cycle button (DRONE/RHYTHM/DRUMS) [free pad]
+// MIDI OUT: 5-pin DIN (Cliff FM6725) on the jack board. D6 drives the sink
+// (DIN 5) through R20 100 Ω, R21 100 Ω feeds the source (DIN 4) from 3V3.
+// The ROM boot log on this pin runs at 115200 baud, so MIDI gear ignores it.
+#define MIDI_TX_PIN  43   // D6 → Serial1 TX
 
-// NeoPixel data → level shifter (3.3→5V) → stick DIN. Drives the existing
-// level-shifter input pad (v5 STRIP_PIN = D10). Confirm against the board.
-#define NEOPIXEL_PIN 9    // D10 → level-shifter A-input
+// MUTE: S4 (Omron B3F-4055) and the TIP of the FOOT jack, both to GND.
+#define BTN_MUTE     2    // D1 → mute toggle (all-notes-off panic on entry)
+// MODE: S3 (Omron B3F-4055) to GND.
+#define BTN_MODE     1    // D0 → mode cycle (DRONE/RHYTHM/DRUMS)
+
+// HOLD: the RING of the FOOT jack (J9 pin 7). With a two-switch stomp box on a
+// TRS cable, the second switch freezes everything the local sensor and the
+// pedal send while it is down. A MONO footswitch cable shorts the ring to
+// ground, which reads as HOLD all the time: set FOOT2_ENABLE to 0 if you only
+// use mono cables. The milled board leaves D7 open, which reads as released.
+#define FOOT2_PIN    44   // D7
+#define FOOT2_ENABLE 1
+// A latching footswitch (3PDT) stays down after a stomp. MUTE toggles on every
+// press, and also on the release when the switch stayed down longer than this:
+// one stomp = one toggle either way.
+#define MUTE_LATCH_MS 1000
+
+// Expression pedal: stereo 6.35 mm jack (Cliff CL1232A) on the jack board.
+// Tip = wiper through 10k + 100 nF, ring = 3V3 through 200 Ω, sleeve = GND.
+// The internal pull-down holds D2 at 0 V with no pedal. The range is learned:
+// nothing is sent until the pedal has moved over EXP_MIN_SPAN ADC counts.
+#define EXP_PIN      3    // D2 = GPIO3, ADC1 channel 2 (ADC1 works while ESP-NOW runs)
+#define EXP_POLL_MS  5
+#define EXP_MIN_SPAN 800  // of 4095 counts: about 20 % of the pedal travel
+
+// NeoPixel data → SN74LVC1T45 (3.3→5V) → R23 → stick DIN.
+#define NEOPIXEL_PIN 9    // D10
 #define NUM_PIXELS   8
+// The stick sits next to the OLED and washes it out when bright.
+#define NEOPIXEL_BRIGHTNESS 18
 
 #define OLED_W       128
 #define OLED_H       64
 #define OLED_ADDR    0x3C
 
 #define VL53L5CX_ADDR 0x29
-#define DIGIPOT_ADDR  0x2E   // MCP4561 single I²C digipot (A0 strap → 0x2E,
-                             // clear of ToF 0x29 and OLED 0x3C)
 
 #define NUM_PAGES    5       // LIVE / MODE / SETTINGS / PRESETS / INFO
 
@@ -114,6 +139,8 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_mac.h>       // esp_read_mac() + ESP_MAC_WIFI_STA (core 3.x moved these here)
+#include <driver/gpio.h>   // gpio_pulldown_en() for the expression input
 #include <Adafruit_NeoPixel.h>
 #include <SparkFun_VL53L5CX_Library.h>
 #include <Preferences.h>
@@ -135,6 +162,9 @@ static_assert(sizeof(EspNowMidiPacket) == 5,
 enum Mode : uint8_t { MODE_DRONE, MODE_RHYTHM, MODE_DRUMS, MODE_COUNT };
 enum Page : uint8_t { PG_LIVE, PG_MODE, PG_SETTINGS, PG_PRESETS, PG_INFO };
 
+// Per-button debounce state, see buttonPressed().
+struct BtnDebounce { bool stable = true; bool raw = true; uint32_t lastEdge = 0; };
+
 enum SType : uint8_t { T_U8, T_I16, T_BOOL };
 struct Setting {
     const char *name;       // short label for OLED (≤7 chars)
@@ -149,8 +179,7 @@ struct Setting {
 // ─── Persisted runtime settings (NVS-backed) ─────────────────────────────
 // Defaults applied at boot; overwritten by loadSettings() if NVS has values.
 static uint8_t  midiCh       = 1;      // mode router channel
-static uint8_t  digiSrc      = 0;      // digipot expression source: 0=dist 1=vel 2=cX 3=cov
-static bool     digiInvert   = false;  // flip the expression wiper direction
+static uint8_t  ccExp        = 11;     // CC# for the expression pedal (11 = expression)
 static uint8_t  ccDist       = 20;     // CC# for distance
 static uint8_t  ccVel        = 21;     // CC# for velocity
 static uint8_t  ccCentroidX  = 22;     // CC# for centroidX
@@ -165,11 +194,10 @@ static uint8_t  droneRoot    = 48;     // C3
 static uint8_t  rhythmRoot   = 48;
 static bool     distInvert   = false;
 
-#define NUM_SETTINGS 15
+#define NUM_SETTINGS 14
 static const Setting SETTINGS[NUM_SETTINGS] = {
     { "MIDI Ch", "midiCh",   T_U8,   &midiCh,        1,  16,   1 },
-    { "Expr Src","eSrc",     T_U8,   &digiSrc,       0,   3,   1 },  // digipot source
-    { "Expr Inv","eInv",     T_BOOL, &digiInvert,    0,   1,   1 },
+    { "CC Exp",  "ccExp",    T_U8,   &ccExp,         0, 127,   1 },  // expression pedal
     { "CC Dist", "ccDist",   T_U8,   &ccDist,        0, 127,   1 },
     { "CC Vel",  "ccVel",    T_U8,   &ccVel,         0, 127,   1 },
     { "CC CtrX", "ccCx",     T_U8,   &ccCentroidX,   0, 127,   1 },
@@ -199,6 +227,7 @@ static Page          currentPage  = PG_LIVE;
 static bool          oledDirty    = true;
 static unsigned long tOled        = 0;
 static bool          bypassed     = false;
+static bool          holding      = false;   // HOLD footswitch (D7) down: local output frozen
 static bool          configMode   = false;
 static bool          webTaskAlive = false;
 static TaskHandle_t  webTask      = nullptr;
@@ -311,6 +340,10 @@ static bool initEspNow() {
     if (esp_now_init() != ESP_OK) return false;
     esp_now_register_recv_cb(onEspNowRecv);
     esp_read_mac(selfMac, ESP_MAC_WIFI_STA);
+    // Modem sleep off, after WiFi + ESP-NOW are up (same as v6_rx): a sleeping
+    // STA radio misses most ESP-NOW frames and the link flaps.
+    WiFi.setSleep(false);
+    esp_wifi_set_ps(WIFI_PS_NONE);
     return true;
 }
 
@@ -454,51 +487,44 @@ static void pollToF() {
     tofFreshFrame = true;
 }
 
-// ─── M4: MCP4561 digipot — expression OUTPUT ────────────────────────────
-//
-// One I²C digital pot at DIGIPOT_ADDR emulates an expression pedal into
-// another pedal's EXP jack (Dimension-Shifter style). The wiper tracks a
-// chosen ToF feature continuously. 8-bit (0..255 = full sweep).
-//
-// MCP4561 write: command byte 0x00 = (wiper0 register, write), then the
-// 8-bit value. No library — raw Wire is enough.
+// ─── M4: Expression pedal INPUT (D2) ────────────────────────────────────
+// Same reader as v6_rx: 12-bit ADC, EMA, learned range, 0.6-step hysteresis.
+// CC ccExp goes out on midiCh. HOLD keeps the last value, MUTE sends nothing.
+// pollExp() sits above the MIDI helpers, so midiCC() is declared here first.
+static void midiCC(uint8_t cc, uint8_t val, uint8_t ch);
 
-static bool digipotOK = false;
+static uint8_t expCC   = 0;
+static bool    expLive = false;   // true once the pedal has moved far enough to learn its range
 
-static bool initDigipot() {
-    Wire.beginTransmission(DIGIPOT_ADDR);
-    if (Wire.endTransmission() != 0) {
-#if DEBUG
-        Serial.println("[digipot] no ACK");
-#endif
-        return false;
-    }
-    digipotOK = true;
-    return true;
+static void initExp() {
+    analogReadResolution(12);
+    analogSetPinAttenuation(EXP_PIN, ADC_11db);
+    (void)analogRead(EXP_PIN);                  // attaches the pin to the ADC first
+    gpio_pullup_dis((gpio_num_t)EXP_PIN);
+    gpio_pulldown_en((gpio_num_t)EXP_PIN);      // an empty jack reads 0 V
 }
 
-static void digipotWrite(uint8_t wiper) {
-    if (!digipotOK) return;
-    Wire.beginTransmission(DIGIPOT_ADDR);
-    Wire.write(0x00);     // wiper0 register, write command
-    Wire.write(wiper);    // 8-bit value
-    Wire.endTransmission();
-}
-
-// Map the selected ToF feature (0..127 CC-domain) to the 8-bit wiper and
-// write it. Called once per fresh ToF frame so the I²C bus isn't spammed.
-static uint8_t exprWiperLast = 0xFF;
-static void updateExpressionOut() {
-    uint8_t src;
-    switch (digiSrc) {
-        case 1:  src = (uint8_t)velCC; break;
-        case 2:  src = (uint8_t)centroidXcc; break;
-        case 3:  src = (uint8_t)constrain((int)coverage * 2, 0, 127); break;
-        default: src = (uint8_t)distCC; break;     // 0 = distance
-    }
-    if (digiInvert) src = 127 - src;
-    uint8_t wiper = (uint8_t)(((int)src * 255) / 127);
-    if (wiper != exprWiperLast) { digipotWrite(wiper); exprWiperLast = wiper; }
+static void pollExp(uint32_t now) {
+    static uint32_t tLast = 0;
+    static float    ema   = -1.0f;
+    static float    lo    = 4095.0f, hi = 0.0f;
+    static int16_t  sent  = -1;
+    if ((now - tLast) < EXP_POLL_MS) return;
+    tLast = now;
+    float raw = (float)analogRead(EXP_PIN);
+    ema = (ema < 0.0f) ? raw : ema + 0.2f * (raw - ema);
+    if (ema < lo) lo = ema;
+    if (ema > hi) hi = ema;
+    if (hi - lo < EXP_MIN_SPAN) return;
+    expLive = true;
+    float scaled = (ema - lo) / (hi - lo) * 127.0f;
+    // Hysteresis: move only when the reading is 0.6 steps away from the last value sent.
+    if (sent >= 0 && fabsf(scaled - (float)sent) < 0.6f) return;
+    int16_t v = (int16_t)lroundf(scaled);
+    if (v == sent || holding) return;               // HOLD keeps the last value on the bus
+    sent  = v;
+    expCC = (uint8_t)v;
+    midiCC(ccExp, expCC, midiCh);                   // midiCC() drops it while bypassed
 }
 
 // ─── M9: NeoPixel gesture feedback ──────────────────────────────────────
@@ -506,7 +532,7 @@ static void updateExpressionOut() {
 // bypass → dim red. Rate-limited to ~30 fps so it never stalls the loop.
 static void initNeoPixel() {
     strip.begin();
-    strip.setBrightness(60);
+    strip.setBrightness(NEOPIXEL_BRIGHTNESS);
     strip.clear();
     strip.show();
 }
@@ -701,14 +727,17 @@ static void routeMode() {
         triggerPrev = velCC;
         return;
     }
+    // HOLD: the sensor output stays frozen. A held RHYTHM note or the drone keeps
+    // sounding, and only the DRUMS gate above can still release a note.
+    if (holding) {
+        triggerPrev = velCC;
+        return;
+    }
     if (!tofValid) {
         triggerPrev = velCC;
         return;
     }
-    if (tofFreshFrame) {
-        streamFeatureCCs();
-        updateExpressionOut();   // digipot tracks the selected ToF feature
-    }
+    if (tofFreshFrame) streamFeatureCCs();
 
     switch (currentMode) {
         case MODE_DRONE:  droneTick();    break;
@@ -719,37 +748,52 @@ static void routeMode() {
     triggerPrev = velCC;
 }
 
-// ─── Tactile buttons (BTN_MUTE, BTN_MODE) ───────────────────────────────
+// ─── Buttons and footswitches (BTN_MUTE, FOOT2 / HOLD, BTN_MODE) ─────────
+static void toggleBypass() {
+    bypassed = !bypassed;
+    if (bypassed) allNotesOffAllChannels();
+    showToast(bypassed ? "BYPASS" : "ACTIVE");
+    oledDirty = true;
+}
+
+// Debounced button to GND. Returns true once per press (HIGH→LOW edge).
+// b.stable is true while released. (BtnDebounce sits in the types section so
+// Arduino's auto-generated prototype for this function can see it.)
+static bool buttonPressed(uint8_t pin, BtnDebounce &b, uint32_t now) {
+    bool r = (digitalRead(pin) == HIGH);
+    if (r != b.raw) { b.raw = r; b.lastEdge = now; }
+    if ((now - b.lastEdge) < BTN_DEBOUNCE_MS) return false;
+    if (r == b.stable) return false;
+    b.stable = r;
+    return !r;
+}
+
 static void handleButtons() {
-    static bool     muteRaw = true, muteStable = true;
-    static uint32_t muteEdge = 0;
-    static bool     modeRaw = true, modeStable = true;
-    static uint32_t modeEdge = 0;
     uint32_t now = millis();
 
-    // BTN_MUTE
-    bool m = (digitalRead(BTN_MUTE) == HIGH);
-    if (m != muteRaw) { muteRaw = m; muteEdge = now; }
-    if ((now - muteEdge) >= BTN_DEBOUNCE_MS && muteRaw != muteStable) {
-        muteStable = muteRaw;
-        if (!muteStable) {           // press edge (LOW)
-            bypassed = !bypassed;
-            if (bypassed) allNotesOffAllChannels();
-            showToast(bypassed ? "BYPASS" : "ACTIVE");
-            oledDirty = true;
-        }
+    // BTN_MUTE + FOOT tip. Toggles on each press, and on the release of a press
+    // longer than MUTE_LATCH_MS (a latching footswitch stomped off again).
+    static BtnDebounce mute;
+    static uint32_t    mutePressedAt = 0;
+    bool muteWasDown = !mute.stable;
+    if (buttonPressed(BTN_MUTE, mute, now)) { toggleBypass(); mutePressedAt = now; }
+    else if (muteWasDown && mute.stable && (now - mutePressedAt) >= MUTE_LATCH_MS) toggleBypass();
+
+#if FOOT2_ENABLE
+    // FOOT ring = HOLD while down.
+    static BtnDebounce hold;
+    buttonPressed(FOOT2_PIN, hold, now);
+    if (hold.stable == holding) {        // stable is true when released
+        holding = !hold.stable;
+        showToast(holding ? "HOLD" : "FREE");
+        oledDirty = true;
     }
+#endif
 
     // BTN_MODE
-    bool md = (digitalRead(BTN_MODE) == HIGH);
-    if (md != modeRaw) { modeRaw = md; modeEdge = now; }
-    if ((now - modeEdge) >= BTN_DEBOUNCE_MS && modeRaw != modeStable) {
-        modeStable = modeRaw;
-        if (!modeStable) {           // press edge
-            Mode next = (Mode)(((uint8_t)currentMode + 1) % (uint8_t)MODE_COUNT);
-            enterMode(next);
-        }
-    }
+    static BtnDebounce mode;
+    if (buttonPressed(BTN_MODE, mode, now))
+        enterMode((Mode)(((uint8_t)currentMode + 1) % (uint8_t)MODE_COUNT));
 }
 
 // ─── Forward declarations for the settings UI ───────────────────────────
@@ -925,6 +969,7 @@ h1{margin:0 0 4px;font-size:20px;letter-spacing:.1em}
 <div class=bar><span>vel</span><div><b id=bvel></b></div></div>
 <div class=bar><span>cX</span><div><b id=bcx></b></div></div>
 <div class=bar><span>cov</span><div><b id=bcov></b></div></div>
+<div class=bar><span>exp</span><div><b id=bexp></b></div></div>
 <div class=bar><span>bypass</span><div><b id=bbyp></b></div></div>
 </div>
 
@@ -948,6 +993,7 @@ function live(){
     document.getElementById('bvel').style.width=fmt(d.vel,127);
     document.getElementById('bcx').style.width=fmt(d.cx,127);
     document.getElementById('bcov').style.width=fmt(d.cov,64);
+    document.getElementById('bexp').style.width=fmt(d.exp,127);
     document.getElementById('bbyp').style.width=d.byp?'100%':'0%';
     for(let i=0;i<3;i++){document.getElementById('md'+i).className=(d.mode==i?'on':'')}
   })
@@ -988,6 +1034,7 @@ static void handleLive() {
     j += "\"vel\":"    + String((int)velCC) + ",";
     j += "\"cx\":"     + String((int)centroidXcc) + ",";
     j += "\"cov\":"    + String((int)coverage) + ",";
+    j += "\"exp\":"    + String((int)expCC) + ",";
     j += "\"byp\":"    + String(bypassed ? 1 : 0) + ",";
     j += "\"mode\":"   + String((int)currentMode);
     j += "}";
@@ -1127,9 +1174,7 @@ static void handleEncoder() {
                 // Single short tap: context action per page.
                 switch (currentPage) {
                     case PG_LIVE:
-                        bypassed = !bypassed;
-                        if (bypassed) allNotesOffAllChannels();
-                        showToast(bypassed ? "BYPASS" : "ACTIVE");
+                        toggleBypass();
                         break;
                     case PG_MODE:
                         enterMode((Mode)(((uint8_t)currentMode + 1) % (uint8_t)MODE_COUNT));
@@ -1241,6 +1286,7 @@ static void drawPageLive() {
     bool linkUp = seqInit && (millis() - lastRxMs) < NO_SIGNAL_MS;
     int16_t bx = OLED_W;
     if (bypassed)      { bx -= drawBadge(OLED_W - 30, 0, "MUTE") + 1; }
+    else if (holding)  { bx -= drawBadge(OLED_W - 30, 0, "HOLD") + 1; }
     else if (linkUp)   { bx -= drawBadge(OLED_W - 22, 0, "RX")  + 1; }
 
     // Distance bar
@@ -1265,7 +1311,10 @@ static void drawPageLive() {
     if (lastNoteN) oled.printf("N%3u v%3u", (unsigned)lastNoteN, (unsigned)lastNoteV);
     else           oled.print("--- ---");
 
-    if (configMode) drawBadge(80, 50, "CFG");
+    // Expression pedal, once it is plugged in and moved.
+    if (expLive) { oled.setCursor(60, 50); oled.printf("E%3u", (unsigned)expCC); }
+
+    if (configMode) drawBadge(OLED_W - 22, 50, "CFG");
 
     drawPageDots(0, NUM_PAGES);
 }
@@ -1425,6 +1474,10 @@ void setup() {
     pinMode(ENC_PUSH,  INPUT_PULLUP);
     pinMode(BTN_MUTE,  INPUT_PULLUP);
     pinMode(BTN_MODE,  INPUT_PULLUP);
+#if FOOT2_ENABLE
+    pinMode(FOOT2_PIN, INPUT_PULLUP);
+#endif
+    initExp();
     attachInterrupt(digitalPinToInterrupt(ENC_A), encISR, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encISR, CHANGE);
 
@@ -1453,20 +1506,17 @@ void setup() {
     // NeoPixel feedback
     initNeoPixel();
 
-    // USB-MIDI — enableDFU before begin (ESP32-S3 TinyUSB quirk)
-    USB.enableDFU();
+    // USB-MIDI. No USB.enableDFU(): with the extra DFU interface some hosts
+    // enumerate the serial port but skip MIDI (same as v5 and v6_rx).
     usbMidi.begin();
     USB.begin();
 
-    // DIN + TRS MIDI OUT — Serial1 TX only, 31250 baud
+    // DIN MIDI OUT: Serial1 TX only, 31250 baud
     Serial1.begin(31250, SERIAL_8N1, -1, MIDI_TX_PIN);
 
     // ESP-NOW
     bool nowOK = initEspNow();
     if (!nowOK) showToast("ESPNOW FAIL");
-
-    // Expression output (MCP4561 digipot)
-    if (!initDigipot()) showToast("DIGIPOT FAIL");
 
     // VL53L5CX (blob upload ~1 s — covered by WDT)
     if (!initToF()) showToast("ToF FAIL");
@@ -1481,7 +1531,7 @@ void setup() {
         .idle_core_mask = 0,
         .trigger_panic  = true,
     };
-    esp_task_wdt_init(&wdtCfg);
+    esp_task_wdt_reconfigure(&wdtCfg);   // core 3.x already started the TWDT
     esp_task_wdt_add(nullptr);
 
     rateWindowStart = millis();
@@ -1502,7 +1552,8 @@ void loop() {
 
     pollToF();
     drainRx();
-    routeMode();          // mode → MIDI; also drives the digipot expression out
+    pollExp(now);         // expression pedal → CC
+    routeMode();          // mode → MIDI
     updateNeoPixel();     // gesture visual feedback
 
     // NVS save debounce — accumulate setting changes, flush after 2 s idle.
