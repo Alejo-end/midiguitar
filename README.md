@@ -6,7 +6,7 @@ Website with a 3D model and a live demo: **<https://alejo-end.github.io/reins/>*
 
 | Guitar: the pickguard (version 2) | Floor: the receiver box (case version 2) |
 | --- | --- |
-| ![REINS pickguard, top view](reins-guitar/pickguard/v2/renders/v2-top.png) | ![REINS receiver box, exploded view](receiver-case/renders/exploded-iso.png) |
+| ![REINS pickguard, top view](reins-guitar/pickguard/v3/renders/v3-top.png) | ![REINS receiver box, exploded view](receiver-case/renders/exploded-iso.png) |
 
 ## How it works
 
@@ -76,7 +76,7 @@ Each folder has an `export_jlc.py` script. It writes the Gerber zip, the BOM and
 
 | Part | Details |
 | --- | --- |
-| Pickguard, version 2 | [`reins-guitar/pickguard/README.md`](reins-guitar/pickguard/README.md): parts, print settings, assembly, wiring |
+| Pickguard, version 3 | [`reins-guitar/pickguard/README.md`](reins-guitar/pickguard/README.md): parts, print settings, assembly, wiring, and the routing template for the two slide switches. Version 2 is kept for reference. |
 | Receiver case, version 2 | [`receiver-case/README.md`](receiver-case/README.md) |
 
 All parts print in PLA with no supports. The pickguard plate needs a 250 x 220 mm bed (Prusa CORE One). The plate and the receiver lid each have two filament changes for an orange line.
@@ -118,8 +118,8 @@ Working, from the notes in this repository:
 Not tested yet:
 
 - The JLCPCB guitar board and the LED ring. The order files are ready. Nobody tested either board with power.
-- Pickguard version 2 and the receiver case version 2 are designed and sliced. Before the plate print, measure the XIAO socket height (`XIAO_STACK`) and print the fit test.
+- Pickguard version 3 and the receiver case version 2 are designed and sliced. Before the plate print, measure the XIAO socket height (`XIAO_STACK`) and print the fit test.
+- Version 3 needs a pocket routed in the body for the two Mustang slide switches. Measure the switches and the pickups first (list in the pickguard README).
 - The cable lengths come from the 3D model. The depth of the body channel is not measured.
 - `tof_midi_v6` builds but has not run on a board.
 
-A pickguard redesign (version 3) is in progress.
